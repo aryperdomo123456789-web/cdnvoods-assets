@@ -29,6 +29,17 @@ final class Database
         return self::$pdo;
     }
 
+    private static function hasColumn(PDO $pdo, string $table, string $column): bool
+    {
+        $stmt = $pdo->query("PRAGMA table_info(" . $table . ")");
+        foreach ($stmt->fetchAll() as $row) {
+            if (strcasecmp((string) $row['name'], $column) === 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static function migrate(PDO $pdo): void
     {
         $pdo->exec(
@@ -66,6 +77,15 @@ final class Database
                 updated_at TEXT NOT NULL
             )'
         );
+
+        // Migração idempotente: tipo de apontamento (A = IP direto, CNAME = hostname)
+        // e host_header opcional para quando o XUI só responde a um vhost específico.
+        if (!self::hasColumn($pdo, 'origins', 'type')) {
+            $pdo->exec('ALTER TABLE origins ADD COLUMN type TEXT NOT NULL DEFAULT "a"');
+        }
+        if (!self::hasColumn($pdo, 'origins', 'host_header')) {
+            $pdo->exec('ALTER TABLE origins ADD COLUMN host_header TEXT NOT NULL DEFAULT ""');
+        }
 
         // Aliases publicos (main + CNAMEs que resolvem via Cloudflare para a VPS).
         $pdo->exec(
