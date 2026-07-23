@@ -54,7 +54,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <body class="page-bg">
 <main class="card">
     <h1>Primeira configuração</h1>
-    <p>Crie o admin e a origem inicial do proxy.</p>
+    <p>Crie o admin, o domínio oficial do main e a origem inicial do proxy.</p>
     <?php if ($error): ?><div class="alert"><?php echo htmlspecialchars($error); ?></div><?php endif; ?>
     <form method="post">
         <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(csrf_token()); ?>">
@@ -62,13 +62,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <input name="admin_user" required>
         <label>Senha admin</label>
         <input name="admin_pass" type="password" required>
-        <label>Domínio do painel</label>
-        <input name="panel_domain" placeholder="painel.seudominio.com">
-        <label>Host da origem</label>
-        <input name="origin_host" placeholder="45.10.10.10" required>
-        <label>Porta da origem</label>
+        <label>Domínio oficial do main</label>
+        <input name="panel_domain" placeholder="cdnvoods.vr766.com">
+        <small>Esse será o endereço público principal. Para mascarar o IP da VPS, mantenha este host atrás da Cloudflare com proxy ativo.</small>
+        <label>IP ou host da origem XUI</label>
+        <input name="origin_host" placeholder="38.190.176.170" required>
+        <label>Porta da origem XUI</label>
         <input name="origin_port" type="number" min="1" max="65535" value="80" required>
-        <label>Secret do proxy</label>
+        <label>Segredo interno do proxy</label>
         <input name="app_secret" placeholder="opcional, gerado automaticamente">
         <button type="submit">Salvar e iniciar</button>
     </form>

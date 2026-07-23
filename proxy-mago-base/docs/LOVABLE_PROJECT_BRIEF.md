@@ -24,6 +24,8 @@ Deployed environment:
 
 Protect a single streaming origin from direct source leakage by placing a lightweight reverse proxy in front of it and managing the origin through a simple admin panel.
 
+The public main domain is the official front door of the system. It should be the only hostname users share. Alias domains can point to it through Cloudflare, but the origin IP must remain internal and never be published in DNS.
+
 ## Important Decisions
 
 - Do not use Laravel.
@@ -32,6 +34,8 @@ Protect a single streaming origin from direct source leakage by placing a lightw
 - Use Nginx as the reverse proxy.
 - Keep the admin panel minimal and focused.
 - Avoid unnecessary services, queues, or background workers.
+- Keep the official main hostname behind Cloudflare proxying when the goal is to hide the VPS IP.
+- Keep the XUI origin IP out of public DNS records.
 
 ## Active Structure
 
@@ -53,6 +57,7 @@ The active implementation lives in:
 - SQLite settings storage
 - audit log storage
 - production plan document
+- Lovable project brief
 
 ## What Still Needs To Be Built
 
@@ -62,6 +67,14 @@ The active implementation lives in:
 - better validation for origin host and domain mapping
 - optional per-IP limit and abuse tracking
 - safer export/install workflow for the Nginx config
+- a documented install path for Cloudflare-proxied main and alias hostnames
+
+## Practical Example
+
+- Official main: `cdnvoods.vr766.com`
+- Origin XUI: `38.190.176.170`
+- Origin port: `80`
+- Cloudflare mode for public hostnames: proxied/orange-cloud when the objective is to hide the VPS IP
 
 ## Operating Rules For Lovable
 
@@ -88,4 +101,3 @@ Edit in one place, then propagate:
 - GitHub to VPS: `git pull` on `/opt/proxy-mago`
 
 This repository should stay easy to inspect for an AI assistant or a human maintainer.
-
