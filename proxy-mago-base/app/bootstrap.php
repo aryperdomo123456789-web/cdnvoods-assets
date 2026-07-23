@@ -16,6 +16,7 @@ require_once dirname(__DIR__) . '/app/Tokens.php';
 require_once dirname(__DIR__) . '/app/AccessGuard.php';
 require_once dirname(__DIR__) . '/app/PlaylistRewriter.php';
 require_once dirname(__DIR__) . '/app/StreamProxy.php';
+require_once dirname(__DIR__) . '/app/HealthCheck.php';
 
 error_reporting(E_ALL);
 ini_set('display_errors', '0');

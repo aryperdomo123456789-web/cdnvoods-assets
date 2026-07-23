@@ -24,6 +24,33 @@ sudo ln -sf /etc/nginx/sites-available/proxy-mago.conf /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
+### Aplicar pelo painel (uma vez na VPS)
+
+O botão **Aplicar no Nginx** usa um comando fixo e limitado. Instale a regra:
+
+```bash
+echo 'www-data ALL=(root) NOPASSWD: /usr/bin/php /opt/proxy-mago/proxy-mago-base/bin/apply-nginx.php' | sudo tee /etc/sudoers.d/proxy-mago-nginx
+sudo chmod 440 /etc/sudoers.d/proxy-mago-nginx
+sudo visudo -cf /etc/sudoers.d/proxy-mago-nginx
+```
+
+O aplicador salva backup em `proxy-mago.conf.backup`, testa a configuração e
+só então recarrega o Nginx.
+
+## Health checks
+
+O dashboard verifica SQLite, permissão do storage, socket PHP-FPM e cada origem
+ativa. O JSON autenticado fica em `/health.php`.
+
+O access log bruto do Nginx fica desativado porque URLs XUI podem conter
+credenciais. O painel registra somente host e caminho sanitizados no SQLite.
+
+## Legado
+
+Somente `proxy-mago-base/` é servido pelo Nginx. Os arquivos antigos na raiz do
+repositório permanecem apenas como referência e não devem receber permissão de
+escrita do usuário `www-data`.
+
 ## Cloudflare / DNS
 
 - `cdnvoods.vr766.com` → A record para o IP da VPS, **com proxy laranja ligado**.

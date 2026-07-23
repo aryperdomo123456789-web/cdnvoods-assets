@@ -13,6 +13,9 @@ $aliases = AliasRepository::all();
 $lastToken = $_SESSION['last_issued_token'] ?? null;
 unset($_SESSION['last_issued_token']);
 $primaryAlias = AliasRepository::primary();
+$healthChecks = HealthCheck::run();
+$applyResult = $_SESSION['nginx_apply_result'] ?? null;
+unset($_SESSION['nginx_apply_result']);
 ?>
 <!doctype html>
 <html lang="pt-BR">
@@ -32,6 +35,7 @@ $primaryAlias = AliasRepository::primary();
         <a href="#origins">Origens</a>
         <a href="#aliases">Aliases</a>
         <a href="#tokens">Tokens</a>
+        <a href="#health">Saúde</a>
         <a href="/export-config.php">Exportar Nginx</a>
         <a href="/logout.php">Sair</a>
     </nav>
@@ -239,10 +243,39 @@ $primaryAlias = AliasRepository::primary();
         <?php endif; ?>
     </section>
 
-    <section class="card">
+    <section class="card" id="nginx">
         <h2>Config Nginx (preview)</h2>
         <p>Este snippet é o ponto de partida para o proxy reverso. O main público deve ficar atrás da Cloudflare para não expor o IP da VPS.</p>
+        <?php if ($applyResult): ?>
+            <div class="alert <?php echo $applyResult['ok'] ? 'success' : ''; ?>">
+                <?php echo nl2br(htmlspecialchars($applyResult['message'])); ?>
+            </div>
+        <?php endif; ?>
+        <form method="post" action="/apply-config.php" onsubmit="return confirm('Validar, instalar e recarregar o Nginx agora?')">
+            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(csrf_token()); ?>">
+            <button type="submit">Aplicar no Nginx</button>
+        </form>
+        <p><small>O processo cria backup, executa <code>nginx -t</code> e restaura a configuração anterior se a validação falhar.</small></p>
         <textarea readonly rows="18"><?php echo htmlspecialchars($nginxConfig); ?></textarea>
+    </section>
+
+    <section class="card" id="health">
+        <h2>Health checks</h2>
+        <p>Diagnóstico local atualizado ao abrir o dashboard. A verificação de origem tem timeout de 3 segundos.</p>
+        <table>
+            <thead><tr><th>Componente</th><th>Status</th><th>Detalhe</th><th>Tempo</th></tr></thead>
+            <tbody>
+            <?php foreach ($healthChecks as $check): ?>
+                <tr>
+                    <td><?php echo htmlspecialchars($check['label']); ?></td>
+                    <td><span class="status <?php echo $check['ok'] ? 'ok' : 'fail'; ?>"><?php echo $check['ok'] ? 'OK' : 'FALHA'; ?></span></td>
+                    <td><?php echo htmlspecialchars($check['detail']); ?></td>
+                    <td><?php echo (int) $check['ms']; ?> ms</td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+        <p><a href="/health.php" target="_blank" rel="noopener">Ver diagnóstico JSON</a></p>
     </section>
 
     <section class="card">

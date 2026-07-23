@@ -129,6 +129,23 @@ button {
     margin: 12px 0;
 }
 
+.alert.success {
+    background: rgba(34, 197, 94, 0.12);
+    border-color: rgba(34, 197, 94, 0.35);
+    color: #bbf7d0;
+}
+
+.status {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.status.ok { background: rgba(34, 197, 94, 0.16); color: #86efac; }
+.status.fail { background: rgba(248, 113, 113, 0.16); color: #fca5a5; }
+
 table {
     width: 100%;
     border-collapse: collapse;

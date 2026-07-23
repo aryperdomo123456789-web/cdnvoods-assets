@@ -27,6 +27,16 @@ if ($adminUser === '') {
     exit('Dados inválidos.');
 }
 
+if ($panelDomain !== '' && !filter_var($panelDomain, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME)) {
+    http_response_code(422);
+    exit('Domínio do painel inválido.');
+}
+
+if ($appSecret !== '' && !preg_match('/^[A-Za-z0-9_-]{32,128}$/', $appSecret)) {
+    http_response_code(422);
+    exit('O segredo deve ter entre 32 e 128 caracteres (letras, números, _ ou -).');
+}
+
 SettingsRepository::set('admin_user', $adminUser);
 if ($adminPass !== '') {
     SettingsRepository::set('admin_password_hash', password_hash($adminPass, PASSWORD_DEFAULT));
