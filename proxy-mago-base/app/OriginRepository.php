@@ -2,6 +2,12 @@
 
 final class OriginRepository
 {
+    private static function normalizeType(?string $type): string
+    {
+        $t = strtolower(trim((string) $type));
+        return $t === 'cname' ? 'cname' : 'a';
+    }
+
     public static function all(): array
     {
         $stmt = Database::pdo()->query('SELECT * FROM origins ORDER BY id ASC');
@@ -20,8 +26,8 @@ final class OriginRepository
     {
         $now = date('c');
         $stmt = Database::pdo()->prepare(
-            'INSERT INTO origins (name, host, port, scheme, base_path, auth_user, auth_pass, active, created_at, updated_at)
-             VALUES (:name, :host, :port, :scheme, :base_path, :auth_user, :auth_pass, :active, :created_at, :updated_at)'
+            'INSERT INTO origins (name, host, port, scheme, base_path, auth_user, auth_pass, active, type, host_header, created_at, updated_at)
+             VALUES (:name, :host, :port, :scheme, :base_path, :auth_user, :auth_pass, :active, :type, :host_header, :created_at, :updated_at)'
         );
         $stmt->execute([
             ':name' => trim((string) ($data['name'] ?? '')),
@@ -32,6 +38,8 @@ final class OriginRepository
             ':auth_user' => (string) ($data['auth_user'] ?? ''),
             ':auth_pass' => (string) ($data['auth_pass'] ?? ''),
             ':active' => !empty($data['active']) ? 1 : 0,
+            ':type' => self::normalizeType($data['type'] ?? 'a'),
+            ':host_header' => trim((string) ($data['host_header'] ?? '')),
             ':created_at' => $now,
             ':updated_at' => $now,
         ]);
@@ -54,6 +62,8 @@ final class OriginRepository
                     auth_user = :auth_user,
                     auth_pass = :auth_pass,
                     active = :active,
+                    type = :type,
+                    host_header = :host_header,
                     updated_at = :updated_at
               WHERE id = :id'
         );
@@ -63,10 +73,11 @@ final class OriginRepository
             ':port' => (int) ($data['port'] ?? $current['port']),
             ':scheme' => in_array($data['scheme'] ?? $current['scheme'], ['http', 'https'], true) ? $data['scheme'] : $current['scheme'],
             ':base_path' => trim((string) ($data['base_path'] ?? $current['base_path'])),
-            // auth_user/auth_pass: se vier vazio, PRESERVAR o atual (nao apagar por acidente)
             ':auth_user' => array_key_exists('auth_user', $data) && $data['auth_user'] !== '' ? (string) $data['auth_user'] : $current['auth_user'],
             ':auth_pass' => array_key_exists('auth_pass', $data) && $data['auth_pass'] !== '' ? (string) $data['auth_pass'] : $current['auth_pass'],
             ':active' => !empty($data['active']) ? 1 : 0,
+            ':type' => self::normalizeType($data['type'] ?? ($current['type'] ?? 'a')),
+            ':host_header' => trim((string) ($data['host_header'] ?? ($current['host_header'] ?? ''))),
             ':updated_at' => date('c'),
             ':id' => $id,
         ]);
