@@ -1,0 +1,16 @@
+# SSH keys generated locally
+id_github_cdnvoods
+id_github_cdnvoods.pub
+
+# Local server artifacts
+proxy-mago-base/storage/app.sqlite
+proxy-mago-base/storage/local.config.php
+proxy-mago-base/storage/logs/*
+proxy-mago-base/storage/cache/*
+!proxy-mago-base/storage/cache/.gitkeep
+
+# OS / editor noise
+*.log
+Thumbs.db
+.DS_Store
+

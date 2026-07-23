@@ -1,0 +1,41 @@
+# ═══════════════════════════════════════════════════════════════════
+# MAGO GATEWAY V2 - Configuração Apache/Nginx
+# ═══════════════════════════════════════════════════════════════════
+# Todas as requisições que não sejam arquivos reais são roteadas
+# para o router.php, que decide se é um proxy ou página de gestão
+# ═══════════════════════════════════════════════════════════════════
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+
+    # Previne acesso direto a arquivos sensíveis
+    RewriteRule ^config\.php$ - [F,L]
+    RewriteRule ^mago-manager/(auth|cloudflare)\.php$ - [F,L]
+
+    # Se não for um arquivo ou diretório real, redireciona para o router
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.*)$ router.php [L,QSA]
+</IfModule>
+
+# Segurança adicional
+<FilesMatch "^\.">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# Otimizações para streaming
+<IfModule mod_headers.c>
+    # Cache para arquivos M3U
+    <FilesMatch "\.(m3u|m3u8)$">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+        Header set Pragma "no-cache"
+        Header set Expires 0
+    </FilesMatch>
+
+    # Cache para segmentos TS
+    <FilesMatch "\.ts$">
+        Header set Cache-Control "public, max-age=3600"
+    </FilesMatch>
+</IfModule>

@@ -1,0 +1,30 @@
+[
+    {
+        "dominio": "01",
+        "ip_xui": "198.13.16.162",
+        "modo": "stealth",
+        "cloudflare_record_id": "854e7a8a64e022983cdaa53ab1d33fa8",
+        "criado_em": "2026-01-10 11:49:23"
+    },
+    {
+        "dominio": "suafonte",
+        "ip_xui": "23.158.72.30",
+        "modo": "stealth",
+        "cloudflare_record_id": "8161893c89b2bc728cabade8a327727b",
+        "criado_em": "2026-01-10 12:00:05"
+    },
+    {
+        "dominio": "wave",
+        "ip_xui": "38.46.221.36",
+        "modo": "stealth",
+        "cloudflare_record_id": "dd0f2e9bb838502eb1b2604e6d2849ec",
+        "criado_em": "2026-01-10 12:46:43"
+    },
+    {
+        "dominio": "ryzen",
+        "ip_xui": "38.147.106.155",
+        "modo": "stealth",
+        "cloudflare_record_id": "c8aaf0a0800dac14cff23c7667e130f0",
+        "criado_em": "2026-01-10 12:53:36"
+    }
+]
