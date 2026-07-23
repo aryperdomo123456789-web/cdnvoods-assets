@@ -3,21 +3,15 @@
 /**
  * StreamProxy — puxa da origem XUI via cURL e devolve ao cliente.
  *
- * - m3u/m3u8 / get.php: buffer em memória, reescreve URL/credenciais, devolve.
+ * - m3u/m3u8 / get.php: buffer em memoria, reescreve URL/credenciais, devolve.
  * - .ts / demais: streaming chunk a chunk via CURLOPT_WRITEFUNCTION (baixa RAM).
  *
  * Nunca vaza:
- *  - IP/host da origem em cabeçalhos de resposta
- *  - user/pass da origem em cabeçalhos ou body reescrito
+ *  - IP/host da origem em cabecalhos de resposta
+ *  - user/pass da origem em cabecalhos ou body reescrito
  */
 final class StreamProxy
 {
-    /**
-     * Constrói a URL final a partir do path público que chegou no proxy.
-     * Se a origem tem base_path, ele é prefixado. O painel injeta user/pass
-     * da origem no lugar dos que o player mandou (o player só carrega token
-     * público, nunca credenciais reais).
-     */
     private static function buildOriginUrl(array $origin, string $path, array $publicQuery): string
     {
         $url = sprintf('%s://%s:%d', $origin['scheme'], $origin['host'], (int) $origin['port']);
@@ -26,18 +20,32 @@ final class StreamProxy
         }
         $url .= '/' . ltrim($path, '/');
 
-        // Reescreve credenciais: se a origem tem user/pass e é um get.php estilo XUI,
-        // injetamos as credenciais reais no lugar do que veio do cliente.
         if (!empty($origin['auth_user']) && !empty($origin['auth_pass'])) {
             $publicQuery['username'] = $origin['auth_user'];
             $publicQuery['password'] = $origin['auth_pass'];
         }
-        // Remove nosso token interno da querystring enviada à origem.
         unset($publicQuery['t']);
         if (!empty($publicQuery)) {
             $url .= '?' . http_build_query($publicQuery);
         }
         return $url;
+    }
+
+    /**
+     * Se a origem definiu host_header, envia isso em vez do host da URL.
+     * Isso permite conectar por IP (tipo A) mas se apresentar ao XUI com o
+     * hostname que o vhost dele espera.
+     */
+    private static function buildHeaders(array $origin, array $extra = []): array
+    {
+        $headers = ['Accept: */*'];
+        if (!empty($origin['host_header'])) {
+            $headers[] = 'Host: ' . $origin['host_header'];
+        }
+        foreach ($extra as $h) {
+            $headers[] = $h;
+        }
+        return $headers;
     }
 
     /**
@@ -54,7 +62,7 @@ final class StreamProxy
             CURLOPT_CONNECTTIMEOUT => 6,
             CURLOPT_TIMEOUT => 20,
             CURLOPT_USERAGENT => 'ProxyMago/1.0',
-            CURLOPT_HTTPHEADER => ['Accept: */*'],
+            CURLOPT_HTTPHEADER => self::buildHeaders($origin),
             CURLOPT_HEADER => true,
         ]);
         $response = curl_exec($ch);
@@ -86,10 +94,11 @@ final class StreamProxy
         $status = 0;
 
         $ch = curl_init($url);
-        $headers = ['Accept: */*'];
+        $extra = [];
         if ($forwardedRange !== '') {
-            $headers[] = 'Range: ' . $forwardedRange;
+            $extra[] = 'Range: ' . $forwardedRange;
         }
+        $headers = self::buildHeaders($origin, $extra);
         curl_setopt_array($ch, [
             CURLOPT_HTTPHEADER => $headers,
             CURLOPT_FOLLOWLOCATION => true,
@@ -109,7 +118,6 @@ final class StreamProxy
                 $status = (int) $m[1];
                 return $len;
             }
-            // Repassa apenas cabeçalhos seguros. Nada que revele origem.
             $allowed = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control', 'last-modified'];
             $lower = strtolower($line);
             foreach ($allowed as $prefix) {
