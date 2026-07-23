@@ -8,8 +8,8 @@ return [
     'nginx_conf_link' => '/etc/nginx/sites-enabled/proxy-mago.conf',
     'php_fpm_socket' => '/run/php/php8.1-fpm.sock',
     'panel_path' => '/opt/proxy-mago/proxy-mago-base',
-    'allowed_user_agent' => 'MagoPlayer/1.0',
-    'token_ttl' => 3600,
-    'rate_limit_per_minute' => 120,
+    'allowed_user_agent' => '',
+    'token_ttl' => 21600, // 6h por padrao
+    'rate_limit_per_minute' => 240,
     'default_panel_domain' => '',
 ];
