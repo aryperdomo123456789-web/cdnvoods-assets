@@ -72,13 +72,15 @@ unset($_SESSION['nginx_apply_result']);
         <p>Cadastre aqui o XUI real (host, porta e credenciais). Nada disso aparece em DNS, header público ou log de acesso.</p>
         <?php if ($origins): ?>
         <table>
-            <thead><tr><th>#</th><th>Nome</th><th>Host:Porta</th><th>Auth</th><th>Ativo</th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>Nome</th><th>Tipo</th><th>Host:Porta</th><th>Host header</th><th>Auth</th><th>Ativo</th><th></th></tr></thead>
             <tbody>
             <?php foreach ($origins as $o): ?>
                 <tr>
                     <td><?php echo (int) $o['id']; ?></td>
                     <td><?php echo htmlspecialchars($o['name']); ?></td>
+                    <td><?php echo strtoupper((string) ($o['type'] ?? 'a')); ?></td>
                     <td><code><?php echo htmlspecialchars($o['scheme'] . '://' . $o['host'] . ':' . $o['port']); ?></code></td>
+                    <td><?php echo htmlspecialchars((string) ($o['host_header'] ?? '')) ?: '<em>—</em>'; ?></td>
                     <td><?php echo $o['auth_user'] !== '' ? 'sim' : 'não'; ?></td>
                     <td><?php echo (int) $o['active'] === 1 ? 'sim' : 'não'; ?></td>
                     <td>
@@ -98,6 +100,13 @@ unset($_SESSION['nginx_apply_result']);
                                 <input name="host" value="<?php echo htmlspecialchars($o['host']); ?>" required>
                                 <label>Porta</label>
                                 <input name="port" type="number" min="1" max="65535" value="<?php echo (int) $o['port']; ?>" required>
+                                <label>Tipo de apontamento</label>
+                                <select name="type">
+                                    <option value="a" <?php echo (($o['type'] ?? 'a') === 'a') ? 'selected' : ''; ?>>A (IP direto do XUI)</option>
+                                    <option value="cname" <?php echo (($o['type'] ?? 'a') === 'cname') ? 'selected' : ''; ?>>CNAME (domínio interno do XUI)</option>
+                                </select>
+                                <label>Host header enviado ao XUI (opcional)</label>
+                                <input name="host_header" value="<?php echo htmlspecialchars((string) ($o['host_header'] ?? '')); ?>" placeholder="ex: painel.xui.interno" autocomplete="off">
                                 <label>Base path (opcional)</label>
                                 <input name="base_path" value="<?php echo htmlspecialchars($o['base_path']); ?>">
                                 <label>Usuário XUI</label>
@@ -133,6 +142,13 @@ unset($_SESSION['nginx_apply_result']);
             <input name="host" required placeholder="38.190.176.170">
             <label>Porta</label>
             <input name="port" type="number" min="1" max="65535" value="80" required>
+            <label>Tipo de apontamento</label>
+            <select name="type">
+                <option value="a">A (IP direto do XUI)</option>
+                <option value="cname">CNAME (domínio interno do XUI)</option>
+            </select>
+            <label>Host header enviado ao XUI (opcional)</label>
+            <input name="host_header" placeholder="ex: painel.xui.interno" autocomplete="off">
             <label>Base path (opcional)</label>
             <input name="base_path" placeholder="/">
             <label>Usuário XUI</label>
@@ -295,7 +311,7 @@ unset($_SESSION['nginx_apply_result']);
                 <tr><th>Tipo</th><th>IP</th><th>Mensagem</th><th>Data</th></tr>
             </thead>
             <tbody>
-                <?php foreach ($recentLogs as $row): ?>
+                <?php foreach ($rows = $recentLogs as $row): ?>
                     <tr>
                         <td><?php echo htmlspecialchars($row['event_type']); ?></td>
                         <td><?php echo htmlspecialchars($row['client_ip']); ?></td>
