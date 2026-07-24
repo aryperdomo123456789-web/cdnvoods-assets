@@ -54,6 +54,20 @@ function csrf_verify(): void
     }
 }
 
+// Alias retrocompatível para save-origin.php e código antigo que ainda usa verify_csrf($token).
+function verify_csrf(?string $token = null): void
+{
+    if ($token !== null && $token !== '') {
+        $session = $_SESSION['csrf_token'] ?? '';
+        if ($session === '' || !hash_equals($session, $token)) {
+            http_response_code(419);
+            exit('CSRF validation failed.');
+        }
+        return;
+    }
+    csrf_verify();
+}
+
 function require_seeded_or_setup(): void
 {
     if (!SettingsRepository::seeded() && basename($_SERVER['SCRIPT_NAME']) !== 'setup.php') {
