@@ -2,18 +2,25 @@
 
 /**
  * Entrada única de tudo que é PROXY (m3u/m3u8/ts/get.php etc.).
- * O Nginx redireciona /get.php e o fallback de streaming para este arquivo.
+ * Nginx redireciona /get.php e o fallback de streaming para este arquivo.
  *
  * Fluxo:
- *   1. AccessGuard valida alias público, origem, token, rate-limit e UA.
- *   2. Se path é uma playlist (get.php ou *.m3u/*.m3u8), busca buffered e reescreve.
- *   3. Caso contrário, faz streaming direto via cURL.
+ *   1. AccessGuard valida alias, origem, TOKEN OBRIGATÓRIO, rate-limit e UA.
+ *   2. Se path é playlist (get.php ou *.m3u/*.m3u8), buscar buffered e reescrever.
+ *   3. Caso contrário, streaming direto via cURL.
  */
 
 require_once dirname(__DIR__) . '/app/bootstrap.php';
 
-$host = strtolower((string) ($_SERVER['HTTP_X_FORWARDED_HOST'] ?? $_SERVER['HTTP_HOST'] ?? ''));
+// Só confia em X-Forwarded-Host quando o TCP peer é Cloudflare.
+$remoteAddr = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+$rawHost = (string) ($_SERVER['HTTP_HOST'] ?? '');
+if (AccessGuard::isCloudflare($remoteAddr)) {
+    $rawHost = (string) ($_SERVER['HTTP_X_FORWARDED_HOST'] ?? $rawHost);
+}
+$host = strtolower($rawHost);
 $host = preg_replace('/:\d+$/', '', $host);
+
 $clientIp = AccessGuard::clientIp();
 $userAgent = (string) ($_SERVER['HTTP_USER_AGENT'] ?? '-');
 
@@ -38,18 +45,11 @@ $origin = $decision['origin'];
 $alias = $decision['alias'];
 $tokenId = $decision['token'] ? (int) $decision['token']['id'] : null;
 
-// Detecta se é playlist (buffered + rewrite) ou stream binário.
 $isPlaylist = (bool) preg_match('#(get\.php$|\.m3u8?$)#i', $path);
 
 if ($isPlaylist) {
-    // Emite um novo token se o request veio sem um. Senão reaproveita o existente.
-    $tokenForRewrite = $token;
-    if ($tokenForRewrite === '') {
-        $issued = Tokens::issue((int) $alias['id'], '', null);
-        $tokenForRewrite = $issued['token'];
-    }
     $upstream = StreamProxy::fetchBuffered($origin, $path, $query);
-    $publicBody = PlaylistRewriter::rewrite($upstream['body'], $origin, $host, $tokenForRewrite);
+    $publicBody = PlaylistRewriter::rewrite($upstream['body'], $origin, $host, $token);
     $ct = stripos($upstream['content_type'], 'mpegurl') !== false
         ? $upstream['content_type']
         : 'application/vnd.apple.mpegurl';
