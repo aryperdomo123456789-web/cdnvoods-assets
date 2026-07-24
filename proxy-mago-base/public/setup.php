@@ -14,12 +14,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $adminUser = trim((string) ($_POST['admin_user'] ?? ''));
     $adminPass = (string) ($_POST['admin_pass'] ?? '');
-    $panelDomain = trim((string) ($_POST['panel_domain'] ?? ''));
+    $panelDomain = strtolower(trim((string) ($_POST['panel_domain'] ?? '')));
     $originHost = trim((string) ($_POST['origin_host'] ?? ''));
     $originPort = (int) ($_POST['origin_port'] ?? 80);
+    $originType = ($_POST['origin_type'] ?? 'a') === 'cname' ? 'cname' : 'a';
+    $originHostHeader = trim((string) ($_POST['origin_host_header'] ?? ''));
     $appSecret = trim((string) ($_POST['app_secret'] ?? ''));
 
-    if ($adminUser === '' || $adminPass === '' || $originHost === '' || $originPort < 1) {
+    if ($adminUser === '' || $adminPass === '' || $originHost === '' || $originPort < 1 || $panelDomain === '') {
         $error = 'Preencha os campos obrigatórios.';
     } else {
         if ($appSecret === '') {
@@ -32,11 +34,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         SettingsRepository::set('origin_host', $originHost);
         SettingsRepository::set('origin_port', $originPort);
         SettingsRepository::set('app_secret', $appSecret);
-        SettingsRepository::set('allowed_user_agent', Config::get('allowed_user_agent'));
-        SettingsRepository::set('token_ttl', Config::get('token_ttl'));
+        SettingsRepository::set('allowed_user_agent', (string) Config::get('allowed_user_agent', ''));
+        SettingsRepository::set('token_ttl', (int) Config::get('token_ttl', 3600));
         SettingsRepository::set('created_at', date('c'));
 
-        Audit::log('setup', 'Initial setup completed', $_SERVER['REMOTE_ADDR'] ?? '-', $_SERVER['HTTP_USER_AGENT'] ?? '-');
+        // Semeia a origem inicial e o alias primário (o domínio público do painel).
+        $originId = OriginRepository::create([
+            'name' => 'Origem principal',
+            'host' => $originHost,
+            'port' => $originPort,
+            'scheme' => 'http',
+            'base_path' => '',
+            'auth_user' => '',
+            'auth_pass' => '',
+            'active' => 1,
+            'type' => $originType,
+            'host_header' => $originHostHeader,
+        ]);
+
+        AliasRepository::create([
+            'hostname' => $panelDomain,
+            'origin_id' => $originId,
+            'is_primary' => 1,
+            'active' => 1,
+        ]);
+
+        Audit::log('setup', 'Initial setup completed (origin+alias seeded)', $_SERVER['REMOTE_ADDR'] ?? '-', $_SERVER['HTTP_USER_AGENT'] ?? '-');
 
         header('Location: /login.php');
         exit;
@@ -63,12 +86,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <label>Senha admin</label>
         <input name="admin_pass" type="password" required>
         <label>Domínio oficial do main</label>
-        <input name="panel_domain" placeholder="cdnvoods.vr766.com">
-        <small>Esse será o endereço público principal. Para mascarar o IP da VPS, mantenha este host atrás da Cloudflare com proxy ativo.</small>
+        <input name="panel_domain" placeholder="cdnvoods.vr766.com" required>
+        <small>Endereço público principal. Mantenha atrás da Cloudflare com proxy laranja para esconder o IP da VPS.</small>
         <label>IP ou host da origem XUI</label>
         <input name="origin_host" placeholder="38.190.176.170" required>
         <label>Porta da origem XUI</label>
         <input name="origin_port" type="number" min="1" max="65535" value="80" required>
+        <label>Tipo de apontamento</label>
+        <select name="origin_type">
+            <option value="a">A (IP direto)</option>
+            <option value="cname">CNAME (hostname)</option>
+        </select>
+        <label>Host header enviado ao XUI (opcional)</label>
+        <input name="origin_host_header" placeholder="ex: painel.provedor.com">
+        <small>Deixe vazio para usar o host da origem. Útil quando o XUI só responde para um domínio específico.</small>
         <label>Segredo interno do proxy</label>
         <input name="app_secret" placeholder="opcional, gerado automaticamente">
         <button type="submit">Salvar e iniciar</button>
