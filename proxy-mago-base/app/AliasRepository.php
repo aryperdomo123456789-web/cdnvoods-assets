@@ -18,7 +18,8 @@ final class AliasRepository
         $stmt = Database::pdo()->prepare(
             'SELECT a.*, o.host AS origin_host, o.port AS origin_port, o.scheme AS origin_scheme,
                     o.base_path AS origin_base_path, o.auth_user AS origin_user, o.auth_pass AS origin_pass,
-                    o.active AS origin_active, o.name AS origin_name
+                    o.active AS origin_active, o.name AS origin_name,
+                    o.host_header AS origin_host_header, o.type AS origin_type
                FROM aliases a
                JOIN origins o ON o.id = a.origin_id
               WHERE lower(a.hostname) = lower(:h) AND a.active = 1
@@ -47,7 +48,6 @@ final class AliasRepository
     public static function create(array $data): int
     {
         $now = date('c');
-        // Se este vai ser primary, zera o flag dos outros primeiro.
         if (!empty($data['is_primary'])) {
             Database::pdo()->exec('UPDATE aliases SET is_primary = 0');
         }
