@@ -1,5 +1,8 @@
 # Laboratório real — conexões por usuário do XUI
 
+> **Fluxo oficial de publicação:** este servidor `45.140.192.237` publica primeiro em `aryperdomo123456789-web/cdnvoods-assets/tree/backup`. Somente depois a branch `backup` promove o mesmo conteúdo para `aryperdomo123456789-web/cdnvoods-assets/tree/main`. Nunca publicar deste servidor diretamente para `main`.
+
+
 Alvo de produção: VPS `45.140.192.237`, Ubuntu 22.04, `/opt/proxy-mago/proxy-mago-base`.
 Origem protegida: XUI `38.190.176.170` (DNS do main `dafonte.uk`).
 Domínio público de teste: `voods.suafontee.com`.

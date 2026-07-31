@@ -1,5 +1,8 @@
 # Fechamento — validação E2E, carga e checklist de produção (31/07/2026)
 
+> **Fluxo oficial de publicação:** este servidor `45.140.192.237` publica primeiro em `aryperdomo123456789-web/cdnvoods-assets/tree/backup`. Somente depois a branch `backup` promove o mesmo conteúdo para `aryperdomo123456789-web/cdnvoods-assets/tree/main`. Nunca publicar deste servidor diretamente para `main`.
+
+
 Alvo real: VPS `45.140.192.237` (Ubuntu 22.04), PHP 8.1-FPM
 (`/run/php/php8.1-fpm.sock`), SQLite, Nginx, base ativa em
 `/opt/proxy-mago/proxy-mago-base`.

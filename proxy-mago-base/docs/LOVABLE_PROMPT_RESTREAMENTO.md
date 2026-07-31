@@ -1,3 +1,5 @@
+> **Fluxo oficial de publicação:** este servidor `45.140.192.237` publica primeiro em `aryperdomo123456789-web/cdnvoods-assets/tree/backup`. Somente depois a branch `backup` promove o mesmo conteúdo para `aryperdomo123456789-web/cdnvoods-assets/tree/main`. Nunca publicar deste servidor diretamente para `main`.
+
 Implemente no repositório `aryperdomo123456789-web/cdnvoods-assets` o módulo de
 **restreamento em tempo real** para o projeto da CDN, seguindo estritamente o
 documento [PLANO_RESTREAMENTO_TEMPO_REAL.md](/opt/proxy-mago/proxy-mago-base/docs/PLANO_RESTREAMENTO_TEMPO_REAL.md).

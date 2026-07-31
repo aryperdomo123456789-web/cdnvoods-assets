@@ -1,5 +1,8 @@
 # Código de App — 1 código, vários XUIs
 
+> **Fluxo oficial de publicação:** este servidor `45.140.192.237` publica primeiro em `aryperdomo123456789-web/cdnvoods-assets/tree/backup`. Somente depois a branch `backup` promove o mesmo conteúdo para `aryperdomo123456789-web/cdnvoods-assets/tree/main`. Nunca publicar deste servidor diretamente para `main`.
+
+
 ## O problema
 O app tem um DNS fixo compilado dentro dele (`assistservpd.phpd77.com`). Esse DNS
 só sabe falar com UM servidor. Se os assinantes estão espalhados em vários XUIs,
