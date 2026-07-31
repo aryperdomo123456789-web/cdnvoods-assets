@@ -220,7 +220,26 @@ async function getJson(url) {
   if (!r.ok) throw new Error('http ' + r.status);
   const d = await r.json();
   if (d.error) throw new Error(d.detail || d.error);
+  if (d._meta) applyMeta(d._meta);
   return d;
+}
+
+// Frescor + polling adaptativo (Fase 1.3/1.4): o servidor manda a idade do
+// dado e o intervalo que o painel deve usar. Assim nenhuma aba martela o
+// SQLite mais rápido do que a fonte se atualiza.
+const pollHint = {ms: 0};
+function applyMeta(meta) {
+  if (Number(meta.poll_after_ms) > 0) pollHint.ms = Number(meta.poll_after_ms);
+  const box = document.getElementById('freshbar');
+  if (!box) return;
+  const age = Number(meta.data_age_seconds || 0);
+  if (meta.degraded) {
+    box.className = 'tag warn';
+    box.textContent = 'dado com ' + age + 's de atraso — ' + (meta.reasons || []).join(' | ');
+  } else {
+    box.className = 'tag ok';
+    box.textContent = 'ao vivo (fonte com ' + age + 's, consulta ' + (meta.query_ms || 0) + 'ms)';
+  }
 }
 
 const POLL_USERS_MS = 6000;
