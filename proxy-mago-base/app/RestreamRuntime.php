@@ -716,12 +716,16 @@ final class RestreamRuntime
         $sql = 'SELECT metric, value
                   FROM cdn_metrics
                  WHERE metric IN (' . $placeholders . ')
-                   AND ts_epoch = (
-                        SELECT MAX(ts_epoch) FROM cdn_metrics c2 WHERE c2.metric = cdn_metrics.metric
-                   )';
+                  ORDER BY metric ASC, ts_epoch ASC';
         $st = Database::pdo()->prepare($sql);
         $st->execute($metrics);
         $out = array_fill_keys($metrics, 0);
+        // Ordenado por ts crescente: a última linha lida de cada métrica é a
+        // mais recente. Antes usávamos subquery correlacionada sem alias no
+        // FROM interno, e o SQLite ligava `cdn_metrics.metric` à tabela INTERNA
+        // -> o filtro virava MAX(ts_epoch) GLOBAL. Em produção, onde outro job
+        // grava métrica mais nova no mesmo segundo seguinte, a linha certa
+        // simplesmente desaparecia do resultado.
         foreach ($st->fetchAll() as $row) {
             $out[(string) $row['metric']] = (int) $row['value'];
         }
@@ -744,9 +748,7 @@ final class RestreamRuntime
             'SELECT metric, value, ts_epoch
                FROM cdn_metrics
               WHERE metric IN (' . $placeholders . ')
-                AND ts_epoch = (
-                     SELECT MAX(ts_epoch) FROM cdn_metrics c2 WHERE c2.metric = cdn_metrics.metric
-                )'
+              ORDER BY metric ASC, ts_epoch ASC'
         );
         $st->execute($metrics);
         $now = time();
