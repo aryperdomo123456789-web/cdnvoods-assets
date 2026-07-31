@@ -12,6 +12,8 @@
 final class RestreamRuntime
 {
     public const ACTIVE_WINDOW = 90;   // segundos para considerar "ao vivo"
+    /** Idade máxima aceitável do rollup leve antes de recontar (job roda a 30s). */
+    public const ROLLUP_MAX_AGE = 90;
 
     private static function jobsLateCountSql(int $now): string
     {
