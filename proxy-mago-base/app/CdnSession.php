@@ -526,6 +526,24 @@ final class CdnSession
         $now = time();
         JobRunner::step('encerrar_ociosas');
 
+        // in_flight preso: request morreu sem record() (cliente cortou, worker
+        // do FPM morreu). Sem isto a sessão contava viva por horas e o painel
+        // via conexão "sumindo e voltando" a cada tick.
+        JobRunner::step('soltar_in_flight');
+        $inFlight = 0;
+        Database::write(static function (PDO $pdo) use ($now, &$inFlight): void {
+            $st = $pdo->prepare(
+                'UPDATE cdn_sessions
+                    SET active_requests = 0,
+                        last_close_epoch = CASE WHEN last_close_epoch > 0 THEN last_close_epoch ELSE :now END
+                  WHERE status = \'active\'
+                    AND active_requests > 0
+                    AND last_seen_epoch < :cut'
+            );
+            $st->execute([':now' => $now, ':cut' => $now - self::IN_FLIGHT_MAX]);
+            $inFlight = $st->rowCount();
+        }, 'cdnsession.release_in_flight', 2);
+
         Database::run(
             'UPDATE cdn_sessions
                 SET idle_timeout = CASE
@@ -572,7 +590,11 @@ final class CdnSession
         )->fetchColumn();
 
         $stats['processed'] += $closed + $active;
-        $stats['details'] = ['closed' => $closed, 'active' => $active];
+        $stats['details'] = [
+            'closed' => $closed,
+            'active' => $active,
+            'in_flight_released' => $inFlight,
+        ];
     }
 
     /**
