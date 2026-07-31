@@ -88,7 +88,16 @@ final class Database
             return;
         }
 
-        $pdo->exec('PRAGMA journal_mode = WAL');
+        // O timeout precisa existir ANTES de qualquer PRAGMA que possa disputar
+        // lock. Antes, cada processo CLI/FPM tentava reafirmar journal_mode=WAL
+        // sem espera e podia morrer em configureConnection(), fora da blindagem
+        // de Database::write(). Em banco já promovido para WAL, consultar o modo
+        // é suficiente e não tenta adquirir o lock exclusivo de mudança de modo.
+        $pdo->exec('PRAGMA busy_timeout = 30000');
+        $journalMode = strtolower((string) $pdo->query('PRAGMA journal_mode')->fetchColumn());
+        if ($journalMode !== 'wal') {
+            $pdo->exec('PRAGMA journal_mode = WAL');
+        }
         $pdo->exec('PRAGMA foreign_keys = ON');
         $pdo->exec('PRAGMA synchronous = NORMAL');
         // Fase 0 — estabilização do cérebro.
@@ -97,7 +106,6 @@ final class Database
         // (cdn_sessions + proxy_request_events), 15 jobs internos, telemetria
         // de LB e polling do painel. Sem folga de espera qualquer escritor
         // levanta "database is locked" e o painel/stream perde trilha.
-        $pdo->exec('PRAGMA busy_timeout = 30000');
         $pdo->exec('PRAGMA temp_store = MEMORY');
         $pdo->exec('PRAGMA cache_size = -20000');       // ~20MB de page cache
         $pdo->exec('PRAGMA wal_autocheckpoint = 512');  // checkpoint mais curto = WAL menor

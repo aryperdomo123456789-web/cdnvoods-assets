@@ -33,6 +33,26 @@ function check(string $label, bool $cond): void
 putenv('CDN_LAB_COUNT_LOOPBACK=0');
 $user = 'smoke_live_user';
 $pdo = Database::pdo();
+$enabledRow = $pdo->query("SELECT value FROM settings WHERE key = 'cdn_sessions_enabled' LIMIT 1")->fetch();
+$restoreEnabled = static function () use ($pdo, $enabledRow): void {
+    if ($enabledRow === false) {
+        $pdo->exec("DELETE FROM settings WHERE key = 'cdn_sessions_enabled'");
+        return;
+    }
+    $pdo->prepare(
+        'INSERT INTO settings (key, value, updated_at) VALUES (:k,:v,:u)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at'
+    )->execute([':k' => 'cdn_sessions_enabled', ':v' => (string) $enabledRow['value'], ':u' => date('c')]);
+};
+$restoredEnabled = false;
+register_shutdown_function(static function () use (&$restoredEnabled, $restoreEnabled): void {
+    if (!$restoredEnabled) {
+        $restoreEnabled();
+    }
+});
+// A prova não pode depender do toggle persistente deixado pelo painel. Força
+// coleta só durante o smoke e restaura exatamente o valor (ou ausência) anterior.
+hot(static fn() => SettingsRepository::set('cdn_sessions_enabled', 1), 'settings', 'enable.sessions');
 hot(static fn() => $pdo->prepare('DELETE FROM cdn_sessions WHERE username = :u')->execute([':u' => $user]), 'cdn_sessions', 'delete');
 hot(static fn() => $pdo->exec('DELETE FROM cdn_metrics'), 'cdn_metrics', 'delete');
 Cache::flush();
@@ -41,11 +61,18 @@ $_SERVER['HTTP_USER_AGENT'] = 'SmokeTV/1.0';
 $key = hot(static fn() => CdnSession::touch(RequestContext::build('smoke.local', '203.0.113.77', "/live/$user/pass/9001.ts", [])), 'cdn_sessions', 'touch');
 check('sessão aberta', $key !== '');
 
-$active = static function () use ($pdo): int {
-    return (int) $pdo->query(
-        'SELECT COUNT(*) FROM cdn_sessions WHERE ' . CdnSession::activeWhereSql(time()) . '
+$active = static function () use ($pdo, $user): int {
+    // O smoke roda em uma VPS com tráfego real. Contar a tabela inteira fazia
+    // "sessão viva agora" falhar quando QUALQUER cliente legítimo estava ativo
+    // e "sessão fantasma" falhar enquanto restasse outra sessão pública.
+    // A prova deve observar exclusivamente a sessão sintética criada acima.
+    $st = $pdo->prepare(
+        'SELECT COUNT(*) FROM cdn_sessions WHERE username = :u
+           AND ' . CdnSession::activeWhereSql(time()) . '
            AND ' . CdnSession::publicClientWhereSql()
-    )->fetchColumn();
+    );
+    $st->execute([':u' => $user]);
+    return (int) $st->fetchColumn();
 };
 
 echo "\n== 1. in_flight recente ainda conta\n";
@@ -101,6 +128,8 @@ check('active_users respeita o rollup', (int) $s['active_users'] >= 7);
 
 hot(static fn() => $pdo->prepare('DELETE FROM cdn_sessions WHERE username = :u')->execute([':u' => $user]), 'cdn_sessions', 'cleanup');
 hot(static fn() => $pdo->exec('DELETE FROM cdn_metrics'), 'cdn_metrics', 'cleanup');
+hot($restoreEnabled, 'settings', 'restore.sessions');
+$restoredEnabled = true;
 Cache::flush();
 
 echo "\n== 7. trilha quente sem lock\n";
