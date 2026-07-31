@@ -52,3 +52,21 @@ Correção de ferramenta: `bin/smoke-lb.sh` e `bin/smoke-fresh.sh` chamavam `php
 cru e reportavam FALHA FALSA em ambiente sem `php` no PATH; agora têm fallback.
 O passo de micro-cache do `smoke-fresh` também deixou de dar falso negativo
 quando não há nó de LB cadastrado (build de ~0ms).
+
+## 4. Atualizacao 2026-07-31 (P0 de concorrencia)
+
+A frase "bateria completa verde" desta secao anterior valia para execucao
+FUNCIONAL, nao para concorrencia. Na VPS real o `smoke-runtime-live` ainda
+encontrou `SQLSTATE[HY000]: General error: 5 database is locked`.
+
+Separacao oficial (detalhe em `docs/RUNTIME_LOCK_SQLITE_2026-07-31.md`):
+
+- bug funcional do painel: `rollup_age_s` / `rollup_stale` — CORRIGIDO;
+- limitacao operacional do backend: lock de escrita do SQLite — NAO e bug de
+  painel; e requisito de banco (Redis para estado vivo, PostgreSQL para a
+  trilha quente).
+
+Mudanca de processo: os smokes que escrevem em `cdn_sessions`,
+`proxy_request_events`, `proxy_user_runtime` ou `cdn_metrics` agora sao
+SERIALIZADOS por `flock` (`bin/lib/smoke-serial.sh`) e a bateria oficial e
+`bin/smoke-all.sh`. Resultado paralelo nao vale como prova de estabilidade.
