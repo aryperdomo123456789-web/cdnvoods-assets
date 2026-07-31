@@ -214,6 +214,40 @@ try {
             return;
         }
 
+        if (XuiSeriesCompat::shouldHandle($path, $query)) {
+            $rewriteHost = ((string) ($lbDecision['target'] ?? 'main') === 'lb' && (string) ($lbDecision['host'] ?? '') !== '')
+                ? (string) $lbDecision['host']
+                : $host;
+            $buffered = StreamProxy::fetchBuffered($origin, $path, $query);
+            $status = (int) ($buffered['status'] ?? 502);
+            $body = XuiSeriesCompat::normalizeBody((string) ($buffered['body'] ?? ''));
+            $body = PlaylistRewriter::rewrite($body, $origin, $rewriteHost, $token, $publicScheme);
+            $bytes = strlen($body);
+            http_response_code($status);
+            header('Content-Type: application/json; charset=utf-8');
+            header('Cache-Control: no-store');
+            header('X-Content-Type-Options: nosniff');
+            echo $body;
+
+            $inconsistency = '';
+            $reason = 'series_info_compat';
+            AccessGuard::logAccess($host, $path, $status, $bytes, $tokenId, (int) $origin['id'], $reason);
+            $directHost = DirectSource::persist($REQ, $SESSION_KEY, $status);
+            RequestLog::close($REQ, $status, $bytes, $reason, $inconsistency, $directHost, count(StreamProxy::hops()));
+            CdnSession::record($SESSION_KEY, $status, $bytes, $directHost);
+            AuditTimeline::record($REQ, $SESSION_KEY, $status, $bytes, [
+                'origin_id' => (int) $origin['id'],
+                'lb_id' => (int) $lbDecision['lb_id'],
+                'lb_target' => (string) $lbDecision['target'],
+                'lb_reason' => (string) $lbDecision['reason'],
+                'direct_host' => $directHost,
+                'inconsistency' => $inconsistency,
+                'hops' => count(StreamProxy::hops()),
+                'reason' => $reason,
+            ]);
+            return;
+        }
+
         $rewriteHost = ((string) ($lbDecision['target'] ?? 'main') === 'lb' && (string) ($lbDecision['host'] ?? '') !== '')
             ? (string) $lbDecision['host']
             : $host;

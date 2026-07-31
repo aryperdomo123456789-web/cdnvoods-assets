@@ -34,6 +34,7 @@ require_once dirname(__DIR__) . '/app/LbRouter.php';
 require_once dirname(__DIR__) . '/app/DirectSourceParser.php';
 require_once dirname(__DIR__) . '/app/DirectCatalog.php';
 require_once dirname(__DIR__) . '/app/DirectSource.php';
+require_once dirname(__DIR__) . '/app/XuiSeriesCompat.php';
 require_once dirname(__DIR__) . '/app/Divergence.php';
 require_once dirname(__DIR__) . '/app/PlaylistRewriter.php';
 require_once dirname(__DIR__) . '/app/StreamProxy.php';

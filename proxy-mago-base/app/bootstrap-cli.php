@@ -15,7 +15,7 @@ foreach ([
     'Config', 'Cache', 'Database', 'SettingsRepository', 'Audit', 'NginxGenerator',
     'OriginRepository', 'AliasRepository', 'XuiOrigin', 'Tokens', 'AccessGuard',
     'RequestContext', 'RequestLog', 'CredentialGuard', 'CdnSession', 'AuditTimeline',
-    'DirectSourceParser', 'DirectCatalog', 'DirectSource',
+    'DirectSourceParser', 'DirectCatalog', 'DirectSource', 'XuiSeriesCompat',
     'Divergence', 'PlaylistRewriter',
     'StreamProxy', 'HealthCheck', 'JobRunner', 'XuiSyncConfig', 'XuiReadOnly', 'XuiAdmin', 'UserIpLock',
     'XuiSyncService', 'RestreamRuntime', 'UserIntelligence',
