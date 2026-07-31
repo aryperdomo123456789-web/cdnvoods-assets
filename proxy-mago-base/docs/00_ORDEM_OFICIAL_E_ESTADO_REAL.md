@@ -47,7 +47,8 @@ Regras: single XUI manda; documento `2026-07-31` vence documento antigo; execuç
 - `in_flight` preso não conta mais como conexão viva (`CdnSession::IN_FLIGHT_MAX` + etapa `soltar_in_flight` no sweep); primeiro request da sessão agora nasce como em voo (o `INSERT` de `touch()` não gravava `active_requests`).
 - KPI sem oscilação: rollup vale por IDADE (`ROLLUP_MAX_AGE`), zero fresco é zero, rollup velho vira modo degradado explícito (`rollup_stale`, `rollup_age_s`) com recontagem única.
 - Resumo do painel depende só do rollup leve (`users_runtime_active`, `over_limit_now`); sem COUNT em `proxy_user_runtime` por tick.
-- Prova: `bin/smoke-runtime-live.sh` (14 ok / 0 falhas). Detalhe: `docs/S2_POS_P0_RUNTIME_2026-07-31.md`.
+- Prova: `bin/smoke-runtime-live.sh` (15 ok / 0 falhas, execução ISOLADA). Detalhe: `docs/S2_POS_P0_RUNTIME_2026-07-31.md`.
+- (P0 2026-07-31) Concorrência: os smokes da trilha quente (`cdn_sessions`, `proxy_request_events`, `proxy_user_runtime`, `cdn_metrics`) agora rodam SERIALIZADOS por `flock` (`bin/lib/smoke-serial.sh`); bateria oficial = `bin/smoke-all.sh`. Lock de escrita do SQLite está documentado como LIMITAÇÃO DE BACKEND (não bug de painel) em `docs/RUNTIME_LOCK_SQLITE_2026-07-31.md`, com PostgreSQL como alvo oficial da trilha quente. Resultado paralelo não vale como prova; prova na VPS `45.140.192.237` está PENDENTE de rerun isolado.
 
 ### Crítico / não iniciado
 - Runtime quente ainda 100% em SQLite (sessão, requests, auditoria, jobs). Sprint 2 define PostgreSQL como destino oficial; hoje não há camada de abstração — `Database.php` é o único ponto com menção a Postgres.

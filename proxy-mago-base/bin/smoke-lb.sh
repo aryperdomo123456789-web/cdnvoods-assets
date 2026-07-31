@@ -12,6 +12,9 @@
 set -uo pipefail
 
 BASE="$(cd "$(dirname "$0")/.." && pwd)"
+. "$(cd "$(dirname "$0")" && pwd)/lib/smoke-serial.sh"
+smoke_resolve_php
+smoke_serialize
 # Sem php no PATH (ambiente de dev/nix) o smoke caia com "command not found"
 # e reportava falha falsa. Agora ha fallback explicito.
 if [ -n "${PHP_BIN:-}" ]; then PHP=("$PHP_BIN");
