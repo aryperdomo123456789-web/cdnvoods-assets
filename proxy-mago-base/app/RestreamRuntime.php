@@ -716,12 +716,16 @@ final class RestreamRuntime
         $sql = 'SELECT metric, value
                   FROM cdn_metrics
                  WHERE metric IN (' . $placeholders . ')
-                   AND ts_epoch = (
-                        SELECT MAX(ts_epoch) FROM cdn_metrics c2 WHERE c2.metric = cdn_metrics.metric
-                   )';
+                  ORDER BY metric ASC, ts_epoch ASC';
         $st = Database::pdo()->prepare($sql);
         $st->execute($metrics);
         $out = array_fill_keys($metrics, 0);
+        // Ordenado por ts crescente: a última linha lida de cada métrica é a
+        // mais recente. Antes usávamos subquery correlacionada sem alias no
+        // FROM interno, e o SQLite ligava `cdn_metrics.metric` à tabela INTERNA
+        // -> o filtro virava MAX(ts_epoch) GLOBAL. Em produção, onde outro job
+        // grava métrica mais nova no mesmo segundo seguinte, a linha certa
+        // simplesmente desaparecia do resultado.
         foreach ($st->fetchAll() as $row) {
             $out[(string) $row['metric']] = (int) $row['value'];
         }
@@ -744,9 +748,7 @@ final class RestreamRuntime
             'SELECT metric, value, ts_epoch
                FROM cdn_metrics
               WHERE metric IN (' . $placeholders . ')
-                AND ts_epoch = (
-                     SELECT MAX(ts_epoch) FROM cdn_metrics c2 WHERE c2.metric = cdn_metrics.metric
-                )'
+              ORDER BY metric ASC, ts_epoch ASC'
         );
         $st->execute($metrics);
         $now = time();
@@ -784,11 +786,26 @@ final class RestreamRuntime
         return $out;
     }
 
-    /** Idade do rollup leve, para o painel avisar modo degradado. */
-    public static function rollupAgeSeconds(): int
+    /**
+     * Idade máxima do rollup leve entre as métricas informadas.
+     *
+     * Contrato único: SEMPRE inteiro >= 0. Rollup ausente não pode devolver -1
+     * (o painel e os smokes tratam o campo como idade, não como código de
+     * erro); ausência = idade acima do teto, ou seja, degradado explícito.
+     *
+     * @param array<int,string> $metrics
+     */
+    public static function rollupAgeSeconds(array $metrics = ['connections_active']): int
     {
-        $aged = self::latestMetricsAged(['connections_active']);
-        return isset($aged['connections_active']) ? (int) $aged['connections_active']['age'] : -1;
+        $aged = self::latestMetricsAged($metrics);
+        $age = 0;
+        foreach ($metrics as $m) {
+            if (!isset($aged[(string) $m])) {
+                return self::ROLLUP_MAX_AGE * 10;
+            }
+            $age = max($age, (int) $aged[(string) $m]['age']);
+        }
+        return max(0, $age);
     }
 
     /**
@@ -858,7 +875,10 @@ final class RestreamRuntime
         $directNow = (int) ($metrics['direct_active'] ?? 0);
         $liveKeys = ['connections_active', 'users_active', 'fetch_active', 'direct_active'];
         $liveFresh = self::metricsIfFresh($liveKeys);
-        $rollupAge = self::rollupAgeSeconds();
+        // MESMA fonte que decide fresco/stale decide a idade publicada, senão
+        // o painel mostra "fresco" com idade de outra métrica (ou -1).
+        $rollupAge = self::rollupAgeSeconds($liveKeys);
+        $rollupStale = $liveFresh === null || $rollupAge > self::ROLLUP_MAX_AGE;
 
         // Recontamos SÓ quando o rollup está velho/ausente (não quando ele
         // legitimamente marca zero). Isso mata a oscilação "0 -> 3 -> 0" e
@@ -927,7 +947,7 @@ final class RestreamRuntime
             'match' => $byConf,
             'jobs_late' => $jobsLateNow,
             'rollup_age_s' => $rollupAge,
-            'rollup_stale' => $liveFresh === null,
+            'rollup_stale' => $rollupStale,
             // O painel ao vivo precisa refletir o que exige ação agora, não a
             // massa informativa do catálogo de direct source.
             'divergences' => $divOperational,

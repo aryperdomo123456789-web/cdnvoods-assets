@@ -62,6 +62,9 @@ $ins = $pdo->prepare('INSERT INTO cdn_metrics (metric, value, ts_epoch) VALUES (
 foreach (['connections_active' => 0, 'users_active' => 0, 'fetch_active' => 0, 'direct_active' => 0] as $m => $v) {
     $ins->execute([':m' => $m, ':v' => $v, ':t' => $now]);
 }
+// Reproduz produção: outro job grava métrica MAIS NOVA um segundo depois.
+// Isso derrubava a leitura da idade e devolvia -1 no painel/smoke.
+$ins->execute([':m' => 'requests_5m', ':v' => 42, ':t' => $now + 1]);
 Cache::flush();
 $k1 = RestreamRuntime::kpisFresh();
 check('rollup fresco reconhecido', $k1['rollup_stale'] === false);
