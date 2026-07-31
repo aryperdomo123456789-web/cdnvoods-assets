@@ -168,13 +168,26 @@ foreach ($tables as $table) {
 
     $colList = implode(', ', $cols);
     $copied = 0;
-    $offset = 0;
     $placeholders = '(' . implode(', ', array_fill(0, count($cols), '?')) . ')';
 
+    // Paginação: quando a tabela tem `id`, usa KEYSET (id > último). LIMIT/OFFSET
+    // no SQLite relê as linhas puladas — em tabela de milhões de eventos isso
+    // vira O(n²) e a janela de corte estoura. OFFSET só como último recurso.
+    $keyset = in_array('id', $cols, true);
+    $lastId = 0;
+    $offset = 0;
+
     while (true) {
-        $stmt = $src->prepare('SELECT ' . $colList . ' FROM ' . $table . ' LIMIT :lim OFFSET :off');
+        if ($keyset) {
+            $stmt = $src->prepare(
+                'SELECT ' . $colList . ' FROM ' . $table . ' WHERE id > :last ORDER BY id LIMIT :lim'
+            );
+            $stmt->bindValue(':last', $lastId, PDO::PARAM_INT);
+        } else {
+            $stmt = $src->prepare('SELECT ' . $colList . ' FROM ' . $table . ' LIMIT :lim OFFSET :off');
+            $stmt->bindValue(':off', $offset, PDO::PARAM_INT);
+        }
         $stmt->bindValue(':lim', $chunk, PDO::PARAM_INT);
-        $stmt->bindValue(':off', $offset, PDO::PARAM_INT);
         $stmt->execute();
         $rows = $stmt->fetchAll();
         if ($rows === []) {
@@ -187,6 +200,9 @@ foreach ($tables as $table) {
             $values[] = $placeholders;
             foreach ($cols as $col) {
                 $params[] = $row[$col] ?? null;
+            }
+            if ($keyset) {
+                $lastId = max($lastId, (int) ($row['id'] ?? 0));
             }
         }
         $insert = 'INSERT INTO ' . $table . ' (' . $colList . ') VALUES ' . implode(', ', $values)
