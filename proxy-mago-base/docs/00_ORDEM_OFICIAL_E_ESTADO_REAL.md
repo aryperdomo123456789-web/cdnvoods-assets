@@ -34,7 +34,7 @@ Regras: single XUI manda; documento `2026-07-31` vence documento antigo; execuç
 - (RESOLVIDO 2026-07-31) Contagem `direct source` em troca de filme: `CdnSession::supersedePrevious()` fecha a sessão anterior de `movie`/`series` do mesmo `username|fingerprint + IP + app` como `close_reason='superseded'`. Provado por `bin/smoke-lb.sh` (etapa 4): contador fica em 1 na troca de filme. Live continua contando por tela, de propósito.
 - Frescor do painel: `restream-data.php` tem `_meta` (idade, query_ms, lock retries); `lb-data.php` só tem `ts`, sem `data_age_ms` nem aviso de modo degradado.
 - `xui_sync_streams`: volume real (483k+ streams) exige confirmação de estabilidade sob cron no ambiente real.
-- Trilha quente ainda em SQLite: `cdn_sessions`, `proxy_request_events` e `proxy_user_runtime` são os três primeiros alvos do `S2-P0-4` (abstração antes de PostgreSQL).
+- Trilha quente ainda em SQLite na prática, MAS o SQL já é portável e o espelho pgsql tem paridade de schema (`S2-P0-4` feito). O que falta é o ensaio de corte com dados reais.
 - (RESOLVIDO 2026-07-31) Smoke de LB: `bin/smoke-lb.sh` cobre score dos nós, decisão de rota, queda de LB com fallback para o cérebro e supersede de VOD.
 
 ### Fechado em 2026-07-31 (Sprint 2 — P0)
@@ -61,7 +61,7 @@ Regras: single XUI manda; documento `2026-07-31` vence documento antigo; execuç
 3. ~~`S1-P2` — `_meta` com `data_age_ms` + aviso de modo degradado~~ FEITO em `app/Freshness.php`, `public/lb-data.php`, `public/restream-data.php`, `public/lb.php`, `public/restream.php` (`bin/smoke-fresh.sh`: 8 ok / 0 falhas).
 4. ~~`S2-P0-1`/`S2-P0-2`/`S2-P0-3` — trava por IP, limite e uptime~~ FEITO (`docs/S2_P0_ENFORCEMENT_2026-07-31.md`).
 5. `S1-P3` — instalar `LB-02` real pelo painel e registrar o baseline medido em `docs/BASELINE_CARGA_LB.md`.
-6. `S2-P0-4` — abstração de persistência (config / runtime quente / auditoria / espelho XUI) antes de qualquer migração para PostgreSQL.
+6. ~~`S2-P0-4` — abstração de persistência antes de PostgreSQL~~ FEITO em `app/Sql.php` + paridade pgsql das 12 tabelas quentes em `Database::migratePgsqlHot()` (`bin/smoke-portability.sh`: 12 ok / 0 falhas). Detalhe: `docs/S2_P0_4_PORTABILIDADE_2026-07-31.md`. Falta o ENSAIO DE CORTE contra um PostgreSQL real (Fase 3).
 
 Nada de migrar banco antes de fechar 1 e 2: contagem errada em banco novo continua contagem errada.
 

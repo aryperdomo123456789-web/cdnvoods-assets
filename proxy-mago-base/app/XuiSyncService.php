@@ -168,27 +168,29 @@ final class XuiSyncService
         try {
             // Snapshot inteiro: sessões ativas mudam por completo a cada ciclo.
             $pdo->exec('DELETE FROM xui_activity_now_cache');
-            $stmt = $pdo->prepare(
-                'INSERT OR REPLACE INTO xui_activity_now_cache
-                 (activity_id, user_id, stream_id, server_id, user_agent, user_ip, container,
-                  date_start, date_end, hls_last_read, hls_end, synced_at)
-                 VALUES (:a,:u,:s,:sv,:ua,:ip,:c,:ds,:de,:hr,:he,:sy)'
-            );
+            // S2-P0-4: `INSERT OR REPLACE` é dialeto SQLite e explode no
+            // PostgreSQL. Upsert portável, mesmo efeito.
+            $stmt = $pdo->prepare(Sql::upsert(
+                'xui_activity_now_cache',
+                ['activity_id', 'user_id', 'stream_id', 'server_id', 'user_agent', 'user_ip',
+                 'container', 'date_start', 'date_end', 'hls_last_read', 'hls_end', 'synced_at'],
+                ['activity_id']
+            ));
             $now = date('c');
             foreach ($rows as $r) {
                 $stmt->execute([
-                    ':a' => (int) $r['activity_id'],
-                    ':u' => (int) ($r['user_id'] ?? 0),
-                    ':s' => (int) ($r['stream_id'] ?? 0),
-                    ':sv' => (int) ($r['server_id'] ?? 0),
-                    ':ua' => substr((string) ($r['user_agent'] ?? ''), 0, 300),
-                    ':ip' => (string) ($r['user_ip'] ?? ''),
-                    ':c' => (string) ($r['container'] ?? ''),
-                    ':ds' => (int) ($r['date_start'] ?? 0),
-                    ':de' => (int) ($r['date_end'] ?? 0),
-                    ':hr' => (int) ($r['hls_last_read'] ?? 0),
-                    ':he' => (int) ($r['hls_end'] ?? 0),
-                    ':sy' => $now,
+                    ':activity_id' => (int) $r['activity_id'],
+                    ':user_id' => (int) ($r['user_id'] ?? 0),
+                    ':stream_id' => (int) ($r['stream_id'] ?? 0),
+                    ':server_id' => (int) ($r['server_id'] ?? 0),
+                    ':user_agent' => substr((string) ($r['user_agent'] ?? ''), 0, 300),
+                    ':user_ip' => (string) ($r['user_ip'] ?? ''),
+                    ':container' => (string) ($r['container'] ?? ''),
+                    ':date_start' => (int) ($r['date_start'] ?? 0),
+                    ':date_end' => (int) ($r['date_end'] ?? 0),
+                    ':hls_last_read' => (int) ($r['hls_last_read'] ?? 0),
+                    ':hls_end' => (int) ($r['hls_end'] ?? 0),
+                    ':synced_at' => $now,
                 ]);
                 $stats['processed']++;
             }

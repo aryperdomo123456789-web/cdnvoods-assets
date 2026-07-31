@@ -26,6 +26,7 @@ SUITES=(
   smoke-limit.sh
   smoke-uptime.sh
   smoke-direct-health.sh
+  smoke-portability.sh
 )
 
 fails=0
