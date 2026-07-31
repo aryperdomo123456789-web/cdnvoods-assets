@@ -60,6 +60,7 @@ session_write_close();
                 <p>Somente o que importa: usuários do XUI, conexões em uso, direct aberto agora, IP final, app, conteúdo e saída main/LB.</p>
             </div>
             <div class="muted" id="stamp">atualizando…</div>
+            <div><span class="tag" id="freshbar">verificando frescor do dado…</span></div>
         </div>
         <div class="kpis" id="kpis">
             <div class="kpi"><span class="muted">carregando</span><b>…</b></div>
