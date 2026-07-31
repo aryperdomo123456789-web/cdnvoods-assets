@@ -92,6 +92,11 @@ final class DirectSource
         Database::pdo()->prepare(
             'UPDATE cdn_sessions
                 SET direct_source = 1,
+                    uptime_start_epoch = CASE
+                        WHEN uptime_start_epoch = 0 AND direct_first_epoch > 0 THEN direct_first_epoch
+                        WHEN uptime_start_epoch = 0 THEN started_epoch
+                        ELSE uptime_start_epoch
+                    END,
                     direct_mode = :m,
                     match_confidence = CASE
                         WHEN xui_activity_id = 0 AND match_confidence IN ("", "low", "pending")

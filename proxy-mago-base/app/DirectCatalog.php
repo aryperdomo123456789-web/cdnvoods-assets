@@ -349,6 +349,11 @@ final class DirectCatalog
         Database::pdo()->exec(
             'UPDATE cdn_sessions
                 SET direct_source = 1,
+                    uptime_start_epoch = CASE
+                        WHEN uptime_start_epoch = 0 AND direct_first_epoch > 0 THEN direct_first_epoch
+                        WHEN uptime_start_epoch = 0 THEN started_epoch
+                        ELSE uptime_start_epoch
+                    END,
                     direct_host_db = COALESCE((SELECT direct_host_from_db FROM direct_stream_state d
                                                 WHERE d.stream_id = cdn_sessions.stream_id), ""),
                     direct_host_effective = CASE WHEN direct_host_runtime <> "" THEN direct_host_runtime

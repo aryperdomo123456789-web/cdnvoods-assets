@@ -28,6 +28,7 @@ require_once dirname(__DIR__) . '/app/RequestLog.php';
 require_once dirname(__DIR__) . '/app/CredentialGuard.php';
 require_once dirname(__DIR__) . '/app/CdnSession.php';
 require_once dirname(__DIR__) . '/app/AuditTimeline.php';
+require_once dirname(__DIR__) . '/app/UserIpLock.php';
 // Roteamento por usuário no caminho quente: só 1 SELECT indexado (LbRouter::decide).
 require_once dirname(__DIR__) . '/app/LbRouter.php';
 require_once dirname(__DIR__) . '/app/DirectSourceParser.php';

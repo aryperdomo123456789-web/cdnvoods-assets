@@ -56,14 +56,17 @@ echo "==> jobs internos (observabilidade / restreamento)"
 php "$BASE/bin/jobs-run.php" --list
 CRON=/etc/cron.d/proxy-mago-jobs
 cat > "$CRON" <<CRONEOF
-# Tick de jobs do painel de restreamento — gerado por bin/deploy.sh
+# Ticks de jobs do painel de restreamento — gerado por bin/deploy.sh
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-* * * * * www-data /usr/bin/php $BASE/bin/jobs-run.php >> $BASE/storage/logs/jobs.log 2>&1
+# Perfil rápido: sessões, runtime e telemetria leve
+* * * * * www-data /usr/bin/php $BASE/bin/jobs-run.php --profile=fast >> $BASE/storage/logs/jobs-fast.log 2>&1
+# Perfil pesado: syncs e consolidações que não podem disputar com o player toda hora
+*/5 * * * * www-data /usr/bin/php $BASE/bin/jobs-run.php --profile=heavy --loop=25 >> $BASE/storage/logs/jobs-heavy.log 2>&1
 CRONEOF
 chmod 644 "$CRON"
-touch "$BASE/storage/logs/jobs.log"
-chown www-data:www-data "$BASE/storage/logs/jobs.log"
+touch "$BASE/storage/logs/jobs-fast.log" "$BASE/storage/logs/jobs-heavy.log"
+chown www-data:www-data "$BASE/storage/logs/jobs-fast.log" "$BASE/storage/logs/jobs-heavy.log"
 systemctl reload cron 2>/dev/null || systemctl restart cron 2>/dev/null || true
 
 if php -m | grep -qi '^pdo_mysql$'; then

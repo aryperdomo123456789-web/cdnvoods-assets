@@ -2,9 +2,36 @@
 
 final class Database
 {
+    /**
+     * Versão MANUAL do schema.
+     *
+     * Antes isso era derivado do mtime/tamanho deste arquivo. Na prática,
+     * qualquer ajuste de comentário ou código disparava a rotina completa de
+     * migração em produção, concorrendo com requests ao vivo e causando
+     * `database is locked`. O schema agora só muda quando esta constante muda.
+     */
+    private const SCHEMA_VERSION = 20260736;
     private static ?PDO $pdo = null;
     private static bool $migrated = false;
     private static int $lockRetries = 0;
+    /** @var array<string,bool> */
+    private static array $columnCache = [];
+
+    public static function driver(): string
+    {
+        $driver = strtolower(trim((string) Config::get('db_driver', 'sqlite')));
+        return in_array($driver, ['sqlite', 'pgsql'], true) ? $driver : 'sqlite';
+    }
+
+    public static function isSqlite(): bool
+    {
+        return self::driver() === 'sqlite';
+    }
+
+    public static function isPgsql(): bool
+    {
+        return self::driver() === 'pgsql';
+    }
 
     public static function pdo(): PDO
     {
@@ -12,38 +39,69 @@ final class Database
             return self::$pdo;
         }
 
-        $path = Config::get('db_path');
-        $dir = dirname($path);
-        if (!is_dir($dir)) {
-            mkdir($dir, 0775, true);
-        }
-
-        self::$pdo = new PDO('sqlite:' . $path, null, null, [
+        self::$pdo = new PDO(self::dsn(), self::dbUser(), self::dbPass(), [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES => false,
         ]);
-
-        self::$pdo->exec('PRAGMA journal_mode = WAL');
-        self::$pdo->exec('PRAGMA foreign_keys = ON');
-        self::$pdo->exec('PRAGMA synchronous = NORMAL');
-        // Fase 0 — estabilização do cérebro.
-        //
-        // O SQLite é UM arquivo servindo, ao mesmo tempo: tráfego ao vivo
-        // (cdn_sessions + proxy_request_events), 15 jobs internos, telemetria
-        // de LB e polling do painel. Sem folga de espera qualquer escritor
-        // levanta "database is locked" e o painel/stream perde trilha.
-        self::$pdo->exec('PRAGMA busy_timeout = 30000');
-        self::$pdo->exec('PRAGMA temp_store = MEMORY');
-        self::$pdo->exec('PRAGMA cache_size = -20000');       // ~20MB de page cache
-        self::$pdo->exec('PRAGMA wal_autocheckpoint = 512');  // checkpoint mais curto = WAL menor
-        self::$pdo->exec('PRAGMA mmap_size = 134217728');     // 128MB de leitura por mmap
+        self::configureConnection(self::$pdo);
 
         // Performance: rodar as ~150 instruções DDL em TODA requisição custa caro
         // (painel e, pior, cada request de stream). A versão do schema é derivada
         // do próprio arquivo (mtime+size), então um deploy novo migra sozinho.
         self::ensureSchema(self::$pdo);
         return self::$pdo;
+    }
+
+    private static function dsn(): string
+    {
+        if (self::isPgsql()) {
+            $host = (string) Config::get('db_host', '127.0.0.1');
+            $port = (int) Config::get('db_port', 5432);
+            $name = (string) Config::get('db_name', 'proxy_mago');
+            $sslmode = (string) Config::get('db_sslmode', 'prefer');
+            return sprintf('pgsql:host=%s;port=%d;dbname=%s;sslmode=%s', $host, $port, $name, $sslmode);
+        }
+
+        $path = (string) Config::get('db_path');
+        $dir = dirname($path);
+        if (!is_dir($dir)) {
+            mkdir($dir, 0775, true);
+        }
+        return 'sqlite:' . $path;
+    }
+
+    private static function dbUser(): ?string
+    {
+        return self::isPgsql() ? (string) Config::get('db_user', '') : null;
+    }
+
+    private static function dbPass(): ?string
+    {
+        return self::isPgsql() ? (string) Config::get('db_pass', '') : null;
+    }
+
+    private static function configureConnection(PDO $pdo): void
+    {
+        if (self::isPgsql()) {
+            $pdo->exec("SET TIME ZONE 'UTC'");
+            return;
+        }
+
+        $pdo->exec('PRAGMA journal_mode = WAL');
+        $pdo->exec('PRAGMA foreign_keys = ON');
+        $pdo->exec('PRAGMA synchronous = NORMAL');
+        // Fase 0 — estabilização do cérebro.
+        //
+        // O SQLite é UM arquivo servindo, ao mesmo tempo: tráfego ao vivo
+        // (cdn_sessions + proxy_request_events), 15 jobs internos, telemetria
+        // de LB e polling do painel. Sem folga de espera qualquer escritor
+        // levanta "database is locked" e o painel/stream perde trilha.
+        $pdo->exec('PRAGMA busy_timeout = 30000');
+        $pdo->exec('PRAGMA temp_store = MEMORY');
+        $pdo->exec('PRAGMA cache_size = -20000');       // ~20MB de page cache
+        $pdo->exec('PRAGMA wal_autocheckpoint = 512');  // checkpoint mais curto = WAL menor
+        $pdo->exec('PRAGMA mmap_size = 134217728');     // 128MB de leitura por mmap
     }
 
     /**
@@ -100,9 +158,21 @@ final class Database
     public static function healthSnapshot(): array
     {
         $pdo = self::pdo();
+        if (self::isPgsql()) {
+            return [
+                'driver' => 'pgsql',
+                'journal_mode' => 'mvcc',
+                'busy_timeout_ms' => 0,
+                'db_bytes' => 0,
+                'wal_bytes' => 0,
+                'lock_retries' => self::$lockRetries,
+                'schema_version' => self::schemaVersion(),
+            ];
+        }
         $path = (string) Config::get('db_path');
         $wal = $path . '-wal';
         return [
+            'driver' => 'sqlite',
             'journal_mode' => (string) $pdo->query('PRAGMA journal_mode')->fetchColumn(),
             'busy_timeout_ms' => (int) $pdo->query('PRAGMA busy_timeout')->fetchColumn(),
             'db_bytes' => (int) @filesize($path),
@@ -112,40 +182,133 @@ final class Database
         ];
     }
 
-    /** Assinatura do schema: muda sozinha quando este arquivo muda (deploy). */
+    /** Versão estável do schema: só muda quando há migração real. */
     private static function schemaVersion(): int
     {
-        $sig = (string) @filemtime(__FILE__) . ':' . (string) @filesize(__FILE__);
-        return (int) (crc32($sig) & 0x7fffffff);
+        return self::SCHEMA_VERSION;
     }
 
     private static function ensureSchema(PDO $pdo): void
     {
-        if (self::$migrated) {
-            return;
-        }
-        $want = self::schemaVersion();
-        $have = (int) $pdo->query('PRAGMA user_version')->fetchColumn();
-        if ($have === $want) {
+        if (self::isPgsql()) {
+            self::migratePgsqlHot($pdo);
             self::$migrated = true;
             return;
         }
-        self::migrate($pdo);
-        $pdo->exec('PRAGMA user_version = ' . $want);
-        self::$migrated = true;
+        if (self::$migrated) {
+            return;
+        }
+        try {
+            $want = self::schemaVersion();
+            $have = (int) $pdo->query('PRAGMA user_version')->fetchColumn();
+            if ($have === $want) {
+                self::$migrated = true;
+                return;
+            }
+        } catch (Throwable $e) {
+            $msg = strtolower($e->getMessage());
+            if (str_contains($msg, 'locked') || str_contains($msg, 'busy')) {
+                error_log('[db:schema] leitura da versão adiada por lock: ' . $e->getMessage());
+                return;
+            }
+            throw $e;
+        }
+
+        $lock = self::acquireSchemaLock();
+        if (!is_resource($lock)) {
+            // Em produção o mais seguro é não martelar DDL no caminho quente.
+            // Se outro processo estiver migrando, este request segue usando o
+            // schema atual e o próximo ciclo reavalia.
+            error_log('[db:schema] migração adiada: lock de schema indisponível');
+            return;
+        }
+        try {
+            $have = (int) $pdo->query('PRAGMA user_version')->fetchColumn();
+            if ($have !== $want) {
+                self::migrate($pdo);
+                $pdo->exec('PRAGMA user_version = ' . $want);
+            }
+            self::$migrated = true;
+        } catch (Throwable $e) {
+            $msg = strtolower($e->getMessage());
+            if (str_contains($msg, 'locked') || str_contains($msg, 'busy')) {
+                error_log('[db:schema] migração adiada por lock: ' . $e->getMessage());
+                return;
+            }
+            throw $e;
+        } finally {
+            self::releaseSchemaLock($lock);
+        }
     }
 
     /** Força a migração (deploy/CLI), ignorando o cache de versão. */
     public static function migrateNow(): void
     {
         $pdo = self::pdo();
-        self::migrate($pdo);
-        $pdo->exec('PRAGMA user_version = ' . self::schemaVersion());
-        self::$migrated = true;
+        if (self::isPgsql()) {
+            self::migratePgsqlHot($pdo);
+            self::$migrated = true;
+            return;
+        }
+        $lock = self::acquireSchemaLock(true);
+        if (!is_resource($lock)) {
+            throw new RuntimeException('Não foi possível adquirir o lock de migração do schema.');
+        }
+        try {
+            self::migrate($pdo);
+            $pdo->exec('PRAGMA user_version = ' . self::schemaVersion());
+            self::$migrated = true;
+        } finally {
+            self::releaseSchemaLock($lock);
+        }
+    }
+
+    /** @return resource|false */
+    private static function acquireSchemaLock(bool $blocking = false)
+    {
+        $dir = dirname(__DIR__) . '/storage/cache';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+        $path = $dir . '/schema-migrate.lock';
+        $fh = @fopen($path, 'c+');
+        if ($fh === false) {
+            return false;
+        }
+        @chmod($path, 0664);
+        $mode = LOCK_EX | ($blocking ? 0 : LOCK_NB);
+        if (!@flock($fh, $mode)) {
+            @fclose($fh);
+            return false;
+        }
+        return $fh;
+    }
+
+    /** @param resource $fh */
+    private static function releaseSchemaLock($fh): void
+    {
+        @flock($fh, LOCK_UN);
+        @fclose($fh);
     }
 
     private static function hasColumn(PDO $pdo, string $table, string $column): bool
     {
+        if (self::isPgsql()) {
+            $stmt = $pdo->prepare(
+                'SELECT 1
+                   FROM information_schema.columns
+                  WHERE table_schema = current_schema()
+                    AND table_name = :table
+                    AND column_name = :column
+                  LIMIT 1'
+            );
+            $stmt->execute([
+                ':table' => strtolower($table),
+                ':column' => strtolower($column),
+            ]);
+            return (bool) $stmt->fetchColumn();
+        }
+
         $stmt = $pdo->query("PRAGMA table_info(" . $table . ")");
         foreach ($stmt->fetchAll() as $row) {
             if (strcasecmp((string) $row['name'], $column) === 0) {
@@ -153,6 +316,15 @@ final class Database
             }
         }
         return false;
+    }
+
+    public static function tableHasColumn(string $table, string $column): bool
+    {
+        $key = strtolower($table . '.' . $column);
+        if (array_key_exists($key, self::$columnCache)) {
+            return self::$columnCache[$key];
+        }
+        return self::$columnCache[$key] = self::hasColumn(self::pdo(), $table, $column);
     }
 
     private static function addColumnIfMissing(PDO $pdo, string $table, string $column, string $decl): void
@@ -167,6 +339,16 @@ final class Database
                 throw $e;
             }
         }
+    }
+
+    public static function insertIgnoreSql(string $table, array $columns): string
+    {
+        $cols = implode(', ', $columns);
+        $vals = implode(',', array_map(static fn(string $c): string => ':' . $c, $columns));
+        if (self::isPgsql()) {
+            return 'INSERT INTO ' . $table . ' (' . $cols . ') VALUES (' . $vals . ') ON CONFLICT DO NOTHING';
+        }
+        return 'INSERT OR IGNORE INTO ' . $table . ' (' . $cols . ') VALUES (' . $vals . ')';
     }
 
     private static function migrate(PDO $pdo): void
@@ -303,6 +485,8 @@ final class Database
                 database_name TEXT NOT NULL DEFAULT "xtream_iptvpro",
                 username TEXT NOT NULL DEFAULT "",
                 password TEXT NOT NULL DEFAULT "",
+                api_url TEXT NOT NULL DEFAULT "",
+                api_token TEXT NOT NULL DEFAULT "",
                 use_tls INTEGER NOT NULL DEFAULT 0,
                 sync_enabled INTEGER NOT NULL DEFAULT 0,
                 sync_interval_seconds INTEGER NOT NULL DEFAULT 5,
@@ -316,6 +500,12 @@ final class Database
                 updated_at TEXT NOT NULL DEFAULT ""
             )'
         );
+        foreach ([
+            'api_url' => 'TEXT NOT NULL DEFAULT ""',
+            'api_token' => 'TEXT NOT NULL DEFAULT ""',
+        ] as $col => $decl) {
+            self::addColumnIfMissing($pdo, 'xui_sync_config', $col, $decl);
+        }
 
         // Espelho mínimo de users. NUNCA guardamos a senha em claro: só máscara
         // + fingerprint sha256(username:password) para casar com o request.
@@ -337,6 +527,17 @@ final class Database
         );
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_users_username ON xui_users_cache(username)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_users_fp ON xui_users_cache(credential_fingerprint)');
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS cdn_user_ip_lock (
+                username TEXT PRIMARY KEY,
+                allowed_ips TEXT NOT NULL DEFAULT "",
+                notes TEXT NOT NULL DEFAULT "",
+                updated_at TEXT NOT NULL DEFAULT "",
+                updated_epoch INTEGER NOT NULL DEFAULT 0
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cuil_updated ON cdn_user_ip_lock(updated_epoch)');
 
         $pdo->exec(
             'CREATE TABLE IF NOT EXISTS xui_streams_cache (
@@ -393,6 +594,7 @@ final class Database
                 referer TEXT NOT NULL DEFAULT "",
                 reason TEXT NOT NULL DEFAULT "",
                 match_confidence TEXT NOT NULL DEFAULT "pending",
+                match_reason TEXT NOT NULL DEFAULT "",
                 inconsistency TEXT NOT NULL DEFAULT ""
             )'
         );
@@ -448,6 +650,8 @@ final class Database
             'divergence' => 'INTEGER NOT NULL DEFAULT 0',
             'count_source' => 'TEXT NOT NULL DEFAULT "cdn_local"',
             'direct_sessions_now' => 'INTEGER NOT NULL DEFAULT 0',
+            'uptime_start_epoch' => 'INTEGER NOT NULL DEFAULT 0',
+            'last_lb_label' => 'TEXT NOT NULL DEFAULT "main"',
         ] as $col => $decl) {
             self::addColumnIfMissing($pdo, 'proxy_user_runtime', $col, $decl);
         }
@@ -497,6 +701,138 @@ final class Database
         self::migrateIntelligence($pdo);
     }
 
+    private static function migratePgsqlHot(PDO $pdo): void
+    {
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS proxy_request_events (
+                id BIGSERIAL PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                ts TEXT NOT NULL,
+                ts_epoch BIGINT NOT NULL DEFAULT 0,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                client_ip TEXT NOT NULL DEFAULT \'\',
+                public_host TEXT NOT NULL DEFAULT \'\',
+                method TEXT NOT NULL DEFAULT \'GET\',
+                path TEXT NOT NULL DEFAULT \'\',
+                query_masked TEXT NOT NULL DEFAULT \'\',
+                route_kind TEXT NOT NULL DEFAULT \'other\',
+                username TEXT NOT NULL DEFAULT \'\',
+                credential_fingerprint TEXT NOT NULL DEFAULT \'\',
+                stream_id BIGINT NULL,
+                token_id BIGINT NULL,
+                origin_id BIGINT NULL,
+                status INTEGER NOT NULL DEFAULT 0,
+                bytes BIGINT NOT NULL DEFAULT 0,
+                user_agent TEXT NOT NULL DEFAULT \'\',
+                referer TEXT NOT NULL DEFAULT \'\',
+                reason TEXT NOT NULL DEFAULT \'\',
+                match_confidence TEXT NOT NULL DEFAULT \'pending\',
+                match_reason TEXT NOT NULL DEFAULT \'\',
+                inconsistency TEXT NOT NULL DEFAULT \'\',
+                session_key TEXT NOT NULL DEFAULT \'\'
+            )'
+        );
+        $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_pre_reqid ON proxy_request_events(request_id)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_pre_ts ON proxy_request_events(ts_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_pre_user ON proxy_request_events(username)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_pre_ip ON proxy_request_events(client_ip)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_pre_host ON proxy_request_events(public_host)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_pre_kind ON proxy_request_events(route_kind)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_pre_session ON proxy_request_events(session_key)');
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS proxy_user_runtime (
+                username TEXT PRIMARY KEY,
+                user_id BIGINT NOT NULL DEFAULT 0,
+                public_host_last_seen TEXT NOT NULL DEFAULT \'\',
+                client_ip_last_seen TEXT NOT NULL DEFAULT \'\',
+                user_agent_last_seen TEXT NOT NULL DEFAULT \'\',
+                active_connections_now INTEGER NOT NULL DEFAULT 0,
+                max_connections INTEGER NOT NULL DEFAULT 0,
+                last_activity_at TEXT NOT NULL DEFAULT \'\',
+                last_activity_epoch BIGINT NOT NULL DEFAULT 0,
+                last_route_kind TEXT NOT NULL DEFAULT \'\',
+                last_stream_id BIGINT NOT NULL DEFAULT 0,
+                last_stream_name TEXT NOT NULL DEFAULT \'\',
+                requests_5m BIGINT NOT NULL DEFAULT 0,
+                bytes_5m BIGINT NOT NULL DEFAULT 0,
+                health_status TEXT NOT NULL DEFAULT \'ok\',
+                updated_at TEXT NOT NULL DEFAULT \'\',
+                cdn_connections_now INTEGER NOT NULL DEFAULT 0,
+                xui_connections_now INTEGER NOT NULL DEFAULT 0,
+                divergence INTEGER NOT NULL DEFAULT 0,
+                count_source TEXT NOT NULL DEFAULT \'cdn_local\',
+                direct_sessions_now INTEGER NOT NULL DEFAULT 0,
+                uptime_start_epoch BIGINT NOT NULL DEFAULT 0,
+                last_lb_label TEXT NOT NULL DEFAULT \'main\'
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_pur_last ON proxy_user_runtime(last_activity_epoch)');
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS proxy_session_links (
+                id BIGSERIAL PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                activity_id BIGINT NOT NULL DEFAULT 0,
+                user_id BIGINT NOT NULL DEFAULT 0,
+                stream_id BIGINT NOT NULL DEFAULT 0,
+                matched_by TEXT NOT NULL DEFAULT \'\',
+                confidence TEXT NOT NULL DEFAULT \'low\',
+                matched_at TEXT NOT NULL DEFAULT \'\'
+            )'
+        );
+        $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_psl_req ON proxy_session_links(request_id, activity_id)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_psl_user ON proxy_session_links(user_id)');
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS cdn_sessions (
+                session_key TEXT PRIMARY KEY,
+                username TEXT NOT NULL DEFAULT \'\',
+                credential_fingerprint TEXT NOT NULL DEFAULT \'\',
+                client_ip TEXT NOT NULL DEFAULT \'\',
+                user_agent TEXT NOT NULL DEFAULT \'\',
+                public_host TEXT NOT NULL DEFAULT \'\',
+                session_kind TEXT NOT NULL DEFAULT \'other\',
+                last_route_kind TEXT NOT NULL DEFAULT \'\',
+                stream_id BIGINT NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL DEFAULT \'\',
+                started_epoch BIGINT NOT NULL DEFAULT 0,
+                uptime_start_epoch BIGINT NOT NULL DEFAULT 0,
+                last_seen_at TEXT NOT NULL DEFAULT \'\',
+                last_seen_epoch BIGINT NOT NULL DEFAULT 0,
+                idle_timeout INTEGER NOT NULL DEFAULT 60,
+                ended_epoch BIGINT NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT \'active\',
+                close_reason TEXT NOT NULL DEFAULT \'\',
+                requests BIGINT NOT NULL DEFAULT 0,
+                bytes BIGINT NOT NULL DEFAULT 0,
+                errors BIGINT NOT NULL DEFAULT 0,
+                active_requests INTEGER NOT NULL DEFAULT 0,
+                last_open_epoch BIGINT NOT NULL DEFAULT 0,
+                last_close_epoch BIGINT NOT NULL DEFAULT 0,
+                direct_source INTEGER NOT NULL DEFAULT 0,
+                direct_host TEXT NOT NULL DEFAULT \'\',
+                xui_activity_id BIGINT NOT NULL DEFAULT 0,
+                match_confidence TEXT NOT NULL DEFAULT \'pending\',
+                match_reason TEXT NOT NULL DEFAULT \'\',
+                last_request_id TEXT NOT NULL DEFAULT \'\',
+                direct_mode TEXT NOT NULL DEFAULT \'\',
+                direct_host_db TEXT NOT NULL DEFAULT \'\',
+                direct_host_runtime TEXT NOT NULL DEFAULT \'\',
+                direct_host_effective TEXT NOT NULL DEFAULT \'\',
+                direct_first_epoch BIGINT NOT NULL DEFAULT 0,
+                direct_last_epoch BIGINT NOT NULL DEFAULT 0,
+                direct_failures INTEGER NOT NULL DEFAULT 0,
+                direct_blocked INTEGER NOT NULL DEFAULT 0,
+                lb_id BIGINT NOT NULL DEFAULT 0
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cdnsess_user ON cdn_sessions(username, status)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cdnsess_seen ON cdn_sessions(last_seen_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cdnsess_status ON cdn_sessions(status, last_seen_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cdnsess_direct ON cdn_sessions(direct_source, status)');
+    }
+
     /**
      * Fase CDN Inteligente: sessão lógica local, contador próprio de conexões,
      * rastreio profundo de direct source, divergências e KPIs.
@@ -517,6 +853,7 @@ final class Database
                 stream_id INTEGER NOT NULL DEFAULT 0,
                 started_at TEXT NOT NULL DEFAULT "",
                 started_epoch INTEGER NOT NULL DEFAULT 0,
+                uptime_start_epoch INTEGER NOT NULL DEFAULT 0,
                 last_seen_at TEXT NOT NULL DEFAULT "",
                 last_seen_epoch INTEGER NOT NULL DEFAULT 0,
                 idle_timeout INTEGER NOT NULL DEFAULT 60,
@@ -541,12 +878,22 @@ final class Database
             'active_requests' => 'INTEGER NOT NULL DEFAULT 0',
             'last_open_epoch' => 'INTEGER NOT NULL DEFAULT 0',
             'last_close_epoch' => 'INTEGER NOT NULL DEFAULT 0',
+            'uptime_start_epoch' => 'INTEGER NOT NULL DEFAULT 0',
         ] as $col => $decl) {
             self::addColumnIfMissing($pdo, 'cdn_sessions', $col, $decl);
         }
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cdnsess_user ON cdn_sessions(username, status)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cdnsess_seen ON cdn_sessions(last_seen_epoch)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cdnsess_status ON cdn_sessions(status, last_seen_epoch)');
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS user_limit_state (
+                username TEXT PRIMARY KEY,
+                over_limit_since_epoch INTEGER NOT NULL DEFAULT 0,
+                updated_epoch INTEGER NOT NULL DEFAULT 0
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_userlimit_updated ON user_limit_state(updated_epoch)');
 
         // Cada hop seguido pelo proxy num consumo "direct source".
         $pdo->exec(
@@ -609,6 +956,7 @@ final class Database
             'session_key' => 'TEXT NOT NULL DEFAULT ""',
             'direct_host' => 'TEXT NOT NULL DEFAULT ""',
             'hops' => 'INTEGER NOT NULL DEFAULT 0',
+            'match_reason' => 'TEXT NOT NULL DEFAULT ""',
         ] as $col => $decl) {
             self::addColumnIfMissing($pdo, 'proxy_request_events', $col, $decl);
         }
@@ -992,8 +1340,11 @@ final class Database
     }
 
     /**
-     * Código de App (multi-XUI): um DNS fixo dentro do app atende assinantes
-     * espalhados em vários XUIs. Cada username fica GRUDADO em um XUI só.
+     * Legado experimental de multi-XUI.
+     *
+     * O projeto atual opera em modo single-XUI. Mantemos estas tabelas apenas
+     * por compatibilidade com bases antigas, sem fazer delas parte da
+     * arquitetura ativa de produção.
      */
     private static function migrateAppCode(PDO $pdo): void
     {

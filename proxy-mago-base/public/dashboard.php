@@ -41,11 +41,12 @@ $xuiPort   = (int) ($xui['port'] ?? 80);
 <header class="topbar">
     <div>
         <strong>CDN Voods</strong>
-        <span>Proteção de origem XUI — 1 domínio público, 1 destino</span>
+        <span>Single XUI — cérebro/main + entrega por main ou LB</span>
     </div>
     <nav>
         <a href="/auditoria.php">Auditoria</a>
         <a href="/restream.php">Restreamento ao vivo</a>
+        <a href="/xui.php">XUI</a>
         <a href="/jobs.php">Jobs</a>
         <a href="/lb.php">LB</a>
         <a href="/avancado.php">Avançado</a>
@@ -89,8 +90,11 @@ $xuiPort   = (int) ($xui['port'] ?? 80);
                 <tr><td>A</td><td><code>meudominio.com</code></td><td><code><?php echo htmlspecialchars($vpsIp); ?></code></td></tr>
             </tbody>
         </table>
-        <p>Sempre para a VPS da CDN — <strong>nunca</strong> para o IP ou DNS do XUI.
-           Pode apontar quantos domínios quiser.</p>
+        <p>O projeto agora trabalha com <strong>um XUI só</strong>. A VPS atual fica como
+           <strong>main/cérebro</strong> do sistema; os domínios públicos podem apontar para ela
+           ou para um LB já instalado, mas <strong>nunca</strong> para o IP ou DNS do XUI.</p>
+        <p>Quando a ideia for tirar banda da VPS atual, o caminho certo é:
+           cérebro decide a rota e o domínio público do cliente entra no LB.</p>
     </section>
 
     <section class="card full">
@@ -130,7 +134,7 @@ $xuiPort   = (int) ($xui['port'] ?? 80);
             <?php endforeach; ?>
             </tbody>
         </table>
-        <p><small>O IP, o DNS e o conteúdo Direct Source do XUI nunca aparecem na resposta: playlists, player_api e EPG são reescritos para o domínio público.</small></p>
+        <p><small>Todos os domínios protegidos usam a mesma origem XUI interna. O IP, o DNS e o conteúdo Direct Source do XUI nunca aparecem na resposta: playlists, player_api e EPG são reescritos para o domínio público.</small></p>
         <?php endif; ?>
     </section>
 </main>

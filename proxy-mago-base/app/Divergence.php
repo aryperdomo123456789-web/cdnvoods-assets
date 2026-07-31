@@ -192,19 +192,42 @@ final class Divergence
      * usuário está acima do limite há mais tempo que a tolerância de reconexão
      * e quando a sessão local não é apenas playlist/api.
      */
-    public static function shouldBlock(string $username): bool
+    public static function shouldBlock(string $username, string $sessionKind = 'other'): bool
     {
         if ($username === '' || self::mode() !== 'block') { return false; }
+        if (in_array($sessionKind, ['playlist', 'api'], true)) { return false; }
         try {
-            $st = Database::pdo()->prepare(
-                'SELECT cdn_count, max_connections, opened_epoch FROM cdn_divergences
-                  WHERE username = :u AND kind = "above_limit" AND status = "open" LIMIT 1'
-            );
+            $pdo = Database::pdo();
+            $st = $pdo->prepare('SELECT max_connections FROM xui_users_cache WHERE username = :u LIMIT 1');
             $st->execute([':u' => $username]);
-            $row = $st->fetch();
-            if (!$row) { return false; }
-            if ((int) $row['max_connections'] <= 0) { return false; }
-            return (time() - (int) $row['opened_epoch']) >= self::tolerance();
+            $max = (int) ($st->fetchColumn() ?: 0);
+            if ($max <= 0) { return false; }
+
+            $active = CdnSession::activeCount($username);
+            $now = time();
+            if ($active <= $max) {
+                $pdo->prepare('DELETE FROM user_limit_state WHERE username = :u')->execute([':u' => $username]);
+                return false;
+            }
+
+            $state = $pdo->prepare('SELECT over_limit_since_epoch FROM user_limit_state WHERE username = :u LIMIT 1');
+            $state->execute([':u' => $username]);
+            $since = (int) ($state->fetchColumn() ?: 0);
+            if ($since <= 0) {
+                $since = $now;
+            }
+            $pdo->prepare(
+                'INSERT INTO user_limit_state (username, over_limit_since_epoch, updated_epoch)
+                 VALUES (:u, :since, :now)
+                 ON CONFLICT(username) DO UPDATE SET
+                    over_limit_since_epoch = CASE
+                        WHEN user_limit_state.over_limit_since_epoch > 0 THEN user_limit_state.over_limit_since_epoch
+                        ELSE excluded.over_limit_since_epoch
+                    END,
+                    updated_epoch = excluded.updated_epoch'
+            )->execute([':u' => $username, ':since' => $since, ':now' => $now]);
+
+            return ($now - $since) >= self::tolerance();
         } catch (Throwable $e) {
             return false; // nunca derrubar o player por causa do enforcement
         }

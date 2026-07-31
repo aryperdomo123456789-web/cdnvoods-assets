@@ -329,17 +329,33 @@ final class LbInstaller
 
     private static function smoke(array $node): array
     {
+        $host = self::smokeHost();
         $cmd = 'set -e; systemctl is-active nginx; systemctl is-active "php*-fpm" 2>/dev/null || systemctl list-units --type=service --state=running | grep -c fpm;'
              . ' curl -s -o /dev/null -w "health=%{http_code}\n" http://127.0.0.1/__lb_health;'
-             . ' curl -s -o /dev/null -w "proxy=%{http_code}\n" "http://127.0.0.1/player_api.php?username=smoke&password=smoke"';
+             . ' curl -s -H "Host: ' . addslashes($host) . '" -o /dev/null -w "proxy=%{http_code}\n" "http://127.0.0.1/player_api.php?username=smoke&password=smoke"';
         $r = LbSsh::run($node, $cmd, 90);
         $out = $r['stdout'];
         $healthOk = str_contains($out, 'health=200');
+        preg_match('/proxy=(\d{3})/', $out, $m);
+        $proxyCode = (int) ($m[1] ?? 0);
         return [
-            'ok' => $healthOk,
+            'ok' => $healthOk && $proxyCode > 0 && $proxyCode < 500,
             'message' => LbSsh::redact($out . ($r['stderr'] !== '' ? ' | ' . $r['stderr'] : '')),
             'duration_ms' => $r['duration_ms'],
         ];
+    }
+
+    private static function smokeHost(): string
+    {
+        $primary = AliasRepository::primary();
+        if ($primary && !empty($primary['hostname'])) {
+            return (string) $primary['hostname'];
+        }
+        $all = AliasRepository::all();
+        if (!empty($all[0]['hostname'])) {
+            return (string) $all[0]['hostname'];
+        }
+        return 'localhost';
     }
 
     /** Configuração runtime do músculo (origem XUI mascarada + endpoint do cérebro). */

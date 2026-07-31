@@ -18,6 +18,7 @@ final class LbPackageBuilder
         'app/Audit.php',
         'app/OriginRepository.php',
         'app/AliasRepository.php',
+        'app/Cache.php',
         'app/XuiOrigin.php',
         'app/Tokens.php',
         'app/AccessGuard.php',
@@ -25,8 +26,12 @@ final class LbPackageBuilder
         'app/RequestLog.php',
         'app/CredentialGuard.php',
         'app/CdnSession.php',
+        'app/AuditTimeline.php',
+        'app/LbRouter.php',
         'app/DirectSourceParser.php',
+        'app/DirectCatalog.php',
         'app/DirectSource.php',
+        'app/Divergence.php',
         'app/PlaylistRewriter.php',
         'app/StreamProxy.php',
         'config/app.php',
@@ -56,6 +61,10 @@ final class LbPackageBuilder
             } else {
                 $missing[] = $rel;
             }
+        }
+
+        if ($missing) {
+            throw new RuntimeException('Pacote do LB incompleto: faltando ' . implode(', ', $missing));
         }
 
         $phar = new PharData($tarPath);

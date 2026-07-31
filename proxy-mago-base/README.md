@@ -2,6 +2,14 @@
 
 Base leve de painel + proxy reverso para proteger uma única origem XUI.
 
+Arquitetura atual:
+
+- a máquina atual fica como `main`/cérebro
+- o `main` mantém painel, SQLite, jobs e auditoria
+- os LBs recebem a carga pesada do tráfego público
+- o projeto está consolidado em `single XUI`
+- o experimento `multi-XUI` é legado e não faz parte do fluxo principal
+
 ## O que tem aqui
 
 - painel em PHP puro
@@ -21,6 +29,6 @@ Base leve de painel + proxy reverso para proteger uma única origem XUI.
 
 ## Próximo passo
 
-- conectar essa base ao Nginx real
-- adicionar a camada de assinatura por IP
-- adicionar rewrite das URLs do player
+- apontar os domínios públicos para o `main` ou para um LB instalado
+- usar a aba `LB` para jogar a carga de stream nos músculos
+- manter a origem XUI apenas no cadastro interno do painel

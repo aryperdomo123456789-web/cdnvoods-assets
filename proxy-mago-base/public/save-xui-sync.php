@@ -14,6 +14,8 @@ XuiSyncConfig::save([
     'database_name' => $_POST['database_name'] ?? 'xtream_iptvpro',
     'username' => $_POST['username'] ?? '',
     'password' => $_POST['password'] ?? '',
+    'api_url' => $_POST['api_url'] ?? '',
+    'api_token' => $_POST['api_token'] ?? '',
     'use_tls' => $_POST['use_tls'] ?? 0,
     'sync_enabled' => $_POST['sync_enabled'] ?? 0,
     'sync_interval_seconds' => $_POST['sync_interval_seconds'] ?? ($current['sync_interval_seconds'] ?? 5),
@@ -25,13 +27,15 @@ XuiSyncConfig::save([
 
 // Nunca registra credencial em log; só host/porta/base.
 Audit::log('xui_sync_config_saved', sprintf(
-    'host=%s port=%s db=%s enabled=%s',
+    'host=%s port=%s db=%s enabled=%s api_url=%s api_token=%s',
     (string) ($_POST['host'] ?? ''),
     (string) ($_POST['port'] ?? ''),
     (string) ($_POST['database_name'] ?? ''),
-    empty($_POST['sync_enabled']) ? '0' : '1'
+    empty($_POST['sync_enabled']) ? '0' : '1',
+    (string) ($_POST['api_url'] ?? ''),
+    empty($_POST['api_token']) ? '0' : '1'
 ));
 
-$_SESSION['flash'] = 'Configuração de sync read-only do XUI salva.';
-header('Location: /restream.php');
+$_SESSION['flash'] = 'Configuração do XUI salva.';
+header('Location: /xui.php');
 exit;

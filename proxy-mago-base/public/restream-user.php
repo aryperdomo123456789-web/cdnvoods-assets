@@ -34,6 +34,7 @@ function bytes_fmt($b): string {
     <nav>
         <a href="/auditoria.php">Auditoria</a>
         <a href="/restream.php">Ao vivo</a>
+        <a href="/xui.php">XUI</a>
         <a href="/jobs.php">Jobs</a>
         <a href="/lb.php">LB</a>
         <a href="/dashboard.php">Domínios</a>

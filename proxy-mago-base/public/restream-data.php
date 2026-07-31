@@ -94,12 +94,14 @@ try {
             $out = ['rows' => RestreamRuntime::byDimension((string) ($_GET['by'] ?? 'client_ip'), $limit)];
             break;
         case 'sessions':
+            $limit = max(10, min(80, $limit));
             $out = [
                 'rows' => CdnSession::live($filters, $limit),
                 'kpis' => RestreamRuntime::kpis(),
             ];
             break;
         case 'users':
+            $limit = max(10, min(200, $limit));
             $out = [
                 'rows' => UserIntelligence::users([
                     'q' => trim((string) ($_GET['q'] ?? $filters['username'])),
@@ -114,6 +116,7 @@ try {
             $out = UserIntelligence::detail((string) ($_GET['username'] ?? ''));
             break;
         case 'divergences':
+            $limit = max(10, min(100, $limit));
             $out = [
                 'rows' => Divergence::open($filters, $limit),
                 'counters' => Divergence::counters(),

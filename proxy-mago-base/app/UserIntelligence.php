@@ -34,6 +34,21 @@ final class UserIntelligence
         return Cache::remember($key, 3, static function () use ($filters, $limit): array {
             $now = time();
             $activeWhere = CdnSession::activeWhereSql($now);
+            $runtimeUptimeSql = Database::tableHasColumn('proxy_user_runtime', 'uptime_start_epoch')
+                ? 'COALESCE(r.uptime_start_epoch, 0)'
+                : '0';
+            $runtimeLbSql = Database::tableHasColumn('proxy_user_runtime', 'last_lb_label')
+                ? 'COALESCE(r.last_lb_label, \'main\')'
+                : '\'main\'';
+            $lbLabelsSql = Database::isPgsql()
+                ? "STRING_AGG(DISTINCT CASE
+                            WHEN lb_id > 0 THEN COALESCE(lb.label, lb.public_ip, 'LB#' || lb_id::text)
+                            ELSE 'main'
+                         END, ',')"
+                : 'GROUP_CONCAT(DISTINCT CASE
+                            WHEN lb_id > 0 THEN COALESCE(lb.label, lb.public_ip, "LB#" || lb_id)
+                            ELSE "main"
+                         END)';
             $sql = 'SELECT
                   u.user_id, u.username, u.max_connections, u.enabled, u.exp_date,
                   u.is_trial, u.is_restreamer, u.synced_at,
@@ -42,14 +57,20 @@ final class UserIntelligence
                   COALESCE(v.dc, 0) AS direct_sessions_now,
                   COALESCE(x.c, 0)  AS xui_connections_now,
                   COALESCE(v.bytes, 0) AS bytes_now,
-                  COALESCE(r.public_host_last_seen, "") AS last_host,
-                  COALESCE(r.client_ip_last_seen, "")   AS last_ip,
-                  COALESCE(r.user_agent_last_seen, "")  AS last_player,
-                  COALESCE(r.last_route_kind, "")       AS last_kind,
+                  COALESCE(r.public_host_last_seen, \'\') AS last_host,
+                  COALESCE(r.client_ip_last_seen, \'\')   AS last_ip,
+                  COALESCE(r.user_agent_last_seen, \'\')  AS last_player,
+                  COALESCE(r.last_route_kind, \'\')       AS last_kind,
                   COALESCE(r.last_activity_epoch, 0)    AS last_epoch,
+                  ' . $runtimeUptimeSql . '             AS uptime_start_epoch,
+                  ' . $runtimeLbSql . '                 AS last_lb_label,
                   COALESCE(r.requests_5m, 0)            AS requests_5m,
                   COALESCE(r.bytes_5m, 0)               AS bytes_5m,
-                  COALESCE(v.last_seen_epoch, 0)        AS session_epoch
+                  COALESCE(v.last_seen_epoch, 0)        AS session_epoch,
+                  COALESCE(v.lb_labels, \'main\')       AS lb_labels,
+                  COALESCE(route.lb_id, 0)              AS route_lb_id,
+                  COALESCE(route.mode, \'main_only\')   AS route_mode,
+                  COALESCE(route_lb.label, CASE WHEN COALESCE(route.lb_id, 0) > 0 THEN route_lb.public_ip ELSE \'main\' END, \'main\') AS route_lb_label
                 FROM xui_users_cache u
                 -- Uma passada só nas sessões ativas: antes eram 3 subqueries
                 -- idênticas (vídeo, fetch, direct) varrendo cdn_sessions.
@@ -58,9 +79,11 @@ final class UserIntelligence
                          SUM(CASE WHEN session_kind IN ' . self::VIDEO_KINDS . ' THEN 1 ELSE 0 END) AS c,
                          SUM(CASE WHEN session_kind IN ' . self::VIDEO_KINDS . ' THEN bytes ELSE 0 END) AS bytes,
                          SUM(CASE WHEN session_kind IN ' . self::FETCH_KINDS . ' THEN 1 ELSE 0 END) AS fc,
-                         SUM(CASE WHEN direct_source = 1 THEN 1 ELSE 0 END) AS dc,
-                         MAX(last_seen_epoch) AS last_seen_epoch
+                         SUM(CASE WHEN ' . CdnSession::directEffectiveSql('cdn_sessions') . ' = 1 THEN 1 ELSE 0 END) AS dc,
+                         MAX(cdn_sessions.last_seen_epoch) AS last_seen_epoch,
+                         ' . $lbLabelsSql . ' AS lb_labels
                     FROM cdn_sessions
+               LEFT JOIN lb_nodes lb ON lb.id = cdn_sessions.lb_id
                    WHERE ' . $activeWhere . '
                      AND ' . CdnSession::publicClientWhereSql() . '
                    GROUP BY username
@@ -69,6 +92,8 @@ final class UserIntelligence
                   SELECT user_id, COUNT(*) c FROM xui_activity_now_cache GROUP BY user_id
                 ) x ON x.user_id = u.user_id
                 LEFT JOIN proxy_user_runtime r ON r.username = u.username
+                LEFT JOIN lb_user_routes route ON route.username = u.username
+                LEFT JOIN lb_nodes route_lb ON route_lb.id = route.lb_id
                 WHERE 1=1';
             $params = [];
             if (!empty($filters['q'])) {

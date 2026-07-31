@@ -17,6 +17,12 @@
  */
 final class CdnSession
 {
+    public const UPTIME_RESUME_GRACE = [
+        'movie'  => 1800,
+        'series' => 1800,
+        'other'  => 600,
+    ];
+
     /** Timeout de ociosidade por tipo de consumo (segundos). */
     public const IDLE = [
         'playlist' => 180,   // get.php / m3u — o player baixa e some
@@ -44,13 +50,26 @@ final class CdnSession
     public static function effectiveExpirySql(string $table = 'cdn_sessions'): string
     {
         return '(CASE
-            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = "movie"
+            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'movie\'
                 THEN ' . $table . '.last_seen_epoch + MAX(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['movie'] . ')
-            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = "series"
+            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'series\'
                 THEN ' . $table . '.last_seen_epoch + MAX(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['series'] . ')
-            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = "other"
+            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'other\'
                 THEN ' . $table . '.last_seen_epoch + MAX(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['other'] . ')
             ELSE ' . $table . '.last_seen_epoch + ' . $table . '.idle_timeout
+        END)';
+    }
+
+    private static function resumeGraceSql(string $table = 'cdn_sessions'): string
+    {
+        return '(CASE
+            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'movie\'
+                THEN ' . self::UPTIME_RESUME_GRACE['movie'] . '
+            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'series\'
+                THEN ' . self::UPTIME_RESUME_GRACE['series'] . '
+            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'other\'
+                THEN ' . self::UPTIME_RESUME_GRACE['other'] . '
+            ELSE 0
         END)';
     }
 
@@ -61,7 +80,7 @@ final class CdnSession
         // então este pré-filtro é um superconjunto seguro (não muda resultado)
         // e usa idx_cdnsess_status(status, last_seen_epoch).
         $floor = $now - (int) max(self::DIRECT_IDLE) - (int) max(self::IDLE);
-        return '(' . $table . '.status = "active")
+        return '(' . $table . '.status = \'active\')
             AND ' . $table . '.last_seen_epoch >= ' . $floor . '
             AND (
                 ' . $table . '.active_requests > 0
@@ -75,7 +94,18 @@ final class CdnSession
      */
     public static function publicClientWhereSql(string $table = 'cdn_sessions'): string
     {
-        return '(' . $table . '.client_ip NOT IN ("127.0.0.1", "::1", "", "-"))';
+        return '(' . $table . '.client_ip NOT IN (\'127.0.0.1\', \'::1\', \'\', \'-\'))';
+    }
+
+    public static function directEffectiveSql(string $table = 'cdn_sessions'): string
+    {
+        return '(CASE
+            WHEN ' . $table . '.direct_source = 1 THEN 1
+            WHEN ' . $table . '.stream_id > 0
+             AND ' . $table . '.stream_id IN (SELECT stream_id FROM direct_stream_state WHERE direct_flag_db = 1)
+                THEN 1
+            ELSE 0
+        END)';
     }
 
     public static function enabled(): bool
@@ -125,15 +155,22 @@ final class CdnSession
         $kind = self::kindOf($ctx);
         $key = self::keyFor($ctx);
         $now = time();
-        $idle = self::IDLE[$kind] ?? 60;
-        self::retireSuperseded($ctx, $key, $kind, $now);
-        $ok = Database::write(static function (PDO $pdo) use ($ctx, $key, $kind, $now, $idle): void {
+        $streamId = (int) ($ctx->streamId ?? 0);
+        $directDb = $streamId > 0 ? DirectCatalog::dbHostFor($streamId) : ['direct' => 0, 'host' => ''];
+        $directFlag = (int) ($directDb['direct'] ?? 0) === 1;
+        $directHostDb = (string) ($directDb['host'] ?? '');
+        $idle = $directFlag
+            ? (self::DIRECT_IDLE[$kind] ?? self::DIRECT_IDLE['other'])
+            : (self::IDLE[$kind] ?? 60);
+        $ok = Database::write(static function (PDO $pdo) use ($ctx, $key, $kind, $now, $idle, $streamId, $directFlag, $directHostDb): void {
             $pdo->prepare(
                 'INSERT INTO cdn_sessions
                    (session_key, username, credential_fingerprint, client_ip, user_agent, public_host,
-                    session_kind, last_route_kind, stream_id, started_at, started_epoch,
-                    last_seen_at, last_seen_epoch, idle_timeout, status, requests, last_request_id)
-                 VALUES (:k,:u,:f,:ip,:ua,:h,:kind,:rk,:sid,:sa,:se,:la,:le,:idle,"active",1,:rid)
+                    session_kind, last_route_kind, stream_id, started_at, started_epoch, uptime_start_epoch,
+                    last_seen_at, last_seen_epoch, idle_timeout, status, requests, last_request_id,
+                    direct_source, direct_mode, direct_host_db, direct_host_effective, direct_first_epoch, direct_last_epoch)
+                 VALUES (:k,:u,:f,:ip,:ua,:h,:kind,:rk,:sid,:sa,:se,:use,:la,:le,:idle,\'active\',1,:rid,
+                         :ds,:dm,:hdb,:heff,:dfe,:dle)
                  ON CONFLICT(session_key) DO UPDATE SET
                    last_seen_at=excluded.last_seen_at,
                    last_seen_epoch=excluded.last_seen_epoch,
@@ -144,59 +181,67 @@ final class CdnSession
                    last_open_epoch=excluded.last_seen_epoch,
                    requests=cdn_sessions.requests + 1,
                    last_request_id=excluded.last_request_id,
-                   status="active",
-                   close_reason="",
+                   status=\'active\',
+                   close_reason=\'\',
                    ended_epoch=0,
-                   started_epoch=CASE WHEN cdn_sessions.status <> "active"
+                   direct_source=CASE
+                        WHEN excluded.direct_source = 1 THEN 1
+                        ELSE cdn_sessions.direct_source
+                   END,
+                   direct_mode=CASE
+                        WHEN excluded.direct_source = 1 AND cdn_sessions.direct_host_runtime <> \'\' THEN \'db_runtime\'
+                        WHEN excluded.direct_source = 1 THEN excluded.direct_mode
+                        ELSE cdn_sessions.direct_mode
+                   END,
+                   direct_host_db=CASE
+                        WHEN excluded.direct_host_db <> \'\' THEN excluded.direct_host_db
+                        ELSE cdn_sessions.direct_host_db
+                   END,
+                   direct_host_effective=CASE
+                        WHEN cdn_sessions.direct_host_runtime <> \'\' THEN cdn_sessions.direct_host_runtime
+                        WHEN excluded.direct_host_effective <> \'\' THEN excluded.direct_host_effective
+                        ELSE cdn_sessions.direct_host_effective
+                   END,
+                   direct_first_epoch=CASE
+                        WHEN excluded.direct_source = 1 AND cdn_sessions.direct_first_epoch = 0 THEN excluded.direct_first_epoch
+                        ELSE cdn_sessions.direct_first_epoch
+                   END,
+                   direct_last_epoch=CASE
+                        WHEN excluded.direct_source = 1 THEN excluded.direct_last_epoch
+                        ELSE cdn_sessions.direct_last_epoch
+                   END,
+                   uptime_start_epoch=CASE
+                        WHEN cdn_sessions.uptime_start_epoch = 0 THEN excluded.uptime_start_epoch
+                        WHEN cdn_sessions.status <> \'active\'
+                         AND (excluded.last_seen_epoch - cdn_sessions.last_seen_epoch) <= ' . self::resumeGraceSql('cdn_sessions') . '
+                            THEN cdn_sessions.uptime_start_epoch
+                        WHEN cdn_sessions.status <> \'active\'
+                         OR (excluded.last_seen_epoch - cdn_sessions.last_seen_epoch) > cdn_sessions.idle_timeout
+                            THEN excluded.uptime_start_epoch
+                        ELSE cdn_sessions.uptime_start_epoch
+                   END,
+                   started_epoch=CASE WHEN cdn_sessions.status <> \'active\'
                         OR (excluded.last_seen_epoch - cdn_sessions.last_seen_epoch) > cdn_sessions.idle_timeout
                         THEN excluded.started_epoch ELSE cdn_sessions.started_epoch END,
-                   started_at=CASE WHEN cdn_sessions.status <> "active"
+                   started_at=CASE WHEN cdn_sessions.status <> \'active\'
                         OR (excluded.last_seen_epoch - cdn_sessions.last_seen_epoch) > cdn_sessions.idle_timeout
                         THEN excluded.started_at ELSE cdn_sessions.started_at END'
             )->execute([
                 ':k' => $key, ':u' => $ctx->username, ':f' => $ctx->fingerprint,
                 ':ip' => $ctx->clientIp, ':ua' => substr($ctx->userAgent, 0, 200), ':h' => $ctx->publicHost,
-                ':kind' => $kind, ':rk' => $ctx->routeKind, ':sid' => (int) $ctx->streamId,
-                ':sa' => date('c', $now), ':se' => $now,
+                ':kind' => $kind, ':rk' => $ctx->routeKind, ':sid' => $streamId,
+                ':sa' => date('c', $now), ':se' => $now, ':use' => $now,
                 ':la' => date('c', $now), ':le' => $now, ':idle' => $idle,
                 ':rid' => $ctx->requestId,
+                ':ds' => $directFlag ? 1 : 0,
+                ':dm' => $directFlag ? 'db_only' : 'none',
+                ':hdb' => $directHostDb,
+                ':heff' => $directHostDb,
+                ':dfe' => $directFlag ? $now : 0,
+                ':dle' => $directFlag ? $now : 0,
             ]);
         }, 'cdnsession.touch');
         return $ok ? $key : '';
-    }
-
-    /**
-     * Se o mesmo app/dispositivo abriu outro filme/serie, a sessao anterior
-     * nao pode continuar contando como conexao ativa. Ela deve virar "superseded".
-     */
-    private static function retireSuperseded(RequestContext $ctx, string $currentKey, string $kind, int $now): void
-    {
-        if (!in_array($kind, ['movie', 'series'], true)) {
-            return;
-        }
-        Database::run(
-            'UPDATE cdn_sessions
-                SET status = "closed",
-                    close_reason = "superseded",
-                    ended_epoch = :now
-              WHERE username = :u
-                AND client_ip = :ip
-                AND user_agent = :ua
-                AND session_kind = :kind
-                AND session_key <> :k
-                AND stream_id <> :sid
-                AND status = "active"',
-            [
-                ':now' => $now,
-                ':u' => $ctx->username,
-                ':ip' => $ctx->clientIp,
-                ':ua' => substr($ctx->userAgent, 0, 200),
-                ':kind' => $kind,
-                ':k' => $currentKey,
-                ':sid' => (int) $ctx->streamId,
-            ],
-            'cdnsession.superseded'
-        );
     }
 
     /** Fecha o ciclo do request dentro da sessão (bytes, erro, direct source). */
@@ -213,16 +258,24 @@ final class CdnSession
                         active_requests = CASE WHEN active_requests > 0 THEN active_requests - 1 ELSE 0 END,
                         last_close_epoch = :lce,
                         idle_timeout = CASE
-                            WHEN :dh <> "" AND session_kind = "movie" THEN MIN(idle_timeout, 45)
-                            WHEN :dh <> "" AND session_kind = "series" THEN MIN(idle_timeout, 45)
-                            WHEN :dh <> "" AND session_kind = "other" THEN MIN(idle_timeout, 45)
+                            WHEN :dh <> \'\' AND session_kind = \'movie\' AND idle_timeout < ' . self::DIRECT_IDLE['movie'] . '
+                                THEN ' . self::DIRECT_IDLE['movie'] . '
+                            WHEN :dh <> \'\' AND session_kind = \'series\' AND idle_timeout < ' . self::DIRECT_IDLE['series'] . '
+                                THEN ' . self::DIRECT_IDLE['series'] . '
+                            WHEN :dh <> \'\' AND session_kind = \'other\' AND idle_timeout < ' . self::DIRECT_IDLE['other'] . '
+                                THEN ' . self::DIRECT_IDLE['other'] . '
                             ELSE idle_timeout
                         END,
-                        status = "active",
-                        close_reason = "",
+                        status = \'active\',
+                        close_reason = \'\',
                         ended_epoch = 0,
-                        direct_source = CASE WHEN :dh <> "" THEN 1 ELSE direct_source END,
-                        direct_host = CASE WHEN :dh2 <> "" THEN :dh3 ELSE direct_host END
+                        direct_source = CASE WHEN :dh <> \'\' THEN 1 ELSE direct_source END,
+                        uptime_start_epoch = CASE
+                            WHEN :dh <> \'\' AND uptime_start_epoch = 0 AND direct_first_epoch > 0 THEN direct_first_epoch
+                            WHEN :dh <> \'\' AND uptime_start_epoch = 0 THEN started_epoch
+                            ELSE uptime_start_epoch
+                        END,
+                        direct_host = CASE WHEN :dh2 <> \'\' THEN :dh3 ELSE direct_host END
                   WHERE session_key = :k'
             )->execute([
                 ':b' => max(0, $bytes), ':e' => $status >= 400 ? 1 : 0,
@@ -259,19 +312,24 @@ final class CdnSession
                         last_seen_epoch = :le,
                         active_requests = CASE WHEN active_requests < 1 THEN 1 ELSE active_requests END,
                         idle_timeout = CASE
-                            WHEN :dh <> "" AND session_kind = "movie" AND idle_timeout < ' . self::DIRECT_IDLE['movie'] . '
+                            WHEN :dh <> \'\' AND session_kind = \'movie\' AND idle_timeout < ' . self::DIRECT_IDLE['movie'] . '
                                 THEN ' . self::DIRECT_IDLE['movie'] . '
-                            WHEN :dh <> "" AND session_kind = "series" AND idle_timeout < ' . self::DIRECT_IDLE['series'] . '
+                            WHEN :dh <> \'\' AND session_kind = \'series\' AND idle_timeout < ' . self::DIRECT_IDLE['series'] . '
                                 THEN ' . self::DIRECT_IDLE['series'] . '
-                            WHEN :dh <> "" AND session_kind = "other" AND idle_timeout < ' . self::DIRECT_IDLE['other'] . '
+                            WHEN :dh <> \'\' AND session_kind = \'other\' AND idle_timeout < ' . self::DIRECT_IDLE['other'] . '
                                 THEN ' . self::DIRECT_IDLE['other'] . '
                             ELSE idle_timeout
                         END,
-                        status = "active",
-                        close_reason = "",
+                        status = \'active\',
+                        close_reason = \'\',
                         ended_epoch = 0,
-                        direct_source = CASE WHEN :dh <> "" THEN 1 ELSE direct_source END,
-                        direct_host = CASE WHEN :dh2 <> "" THEN :dh3 ELSE direct_host END
+                        direct_source = CASE WHEN :dh <> \'\' THEN 1 ELSE direct_source END,
+                        uptime_start_epoch = CASE
+                            WHEN :dh <> \'\' AND uptime_start_epoch = 0 AND direct_first_epoch > 0 THEN direct_first_epoch
+                            WHEN :dh <> \'\' AND uptime_start_epoch = 0 THEN started_epoch
+                            ELSE uptime_start_epoch
+                        END,
+                        direct_host = CASE WHEN :dh2 <> \'\' THEN :dh3 ELSE direct_host END
                   WHERE session_key = :k'
             )->execute([
                 ':la' => date('c'),
@@ -284,6 +342,42 @@ final class CdnSession
         }, 'cdnsession.heartbeat', 2);
     }
 
+    /** Cancela imediatamente a sessão recém-aberta quando o request é negado. */
+    public static function reject(string $key, string $reason = 'rejected'): void
+    {
+        if ($key === '') { return; }
+        Database::write(static function (PDO $pdo) use ($key, $reason): void {
+            $now = time();
+            $pdo->prepare(
+                'UPDATE cdn_sessions
+                    SET active_requests = CASE WHEN active_requests > 0 THEN active_requests - 1 ELSE 0 END,
+                        status = CASE
+                            WHEN active_requests <= 1 THEN \'closed\'
+                            ELSE status
+                        END,
+                        close_reason = CASE
+                            WHEN active_requests <= 1 THEN :reason
+                            ELSE close_reason
+                        END,
+                        ended_epoch = CASE
+                            WHEN active_requests <= 1 THEN :now
+                            ELSE ended_epoch
+                        END,
+                        last_close_epoch = :now2,
+                        last_seen_at = :seen_at,
+                        last_seen_epoch = :seen_epoch
+                  WHERE session_key = :k'
+            )->execute([
+                ':reason' => substr($reason, 0, 60),
+                ':now' => $now,
+                ':now2' => $now,
+                ':seen_at' => date('c', $now),
+                ':seen_epoch' => $now,
+                ':k' => $key,
+            ]);
+        }, 'cdnsession.reject', 2);
+    }
+
     /** Conexões ativas AGORA contadas pela CDN (não pelo XUI). */
     public static function activeCount(string $username): int
     {
@@ -291,7 +385,7 @@ final class CdnSession
             'SELECT COUNT(*) FROM cdn_sessions
               WHERE username = :u AND ' . self::activeWhereSql(time()) . '
                 AND ' . self::publicClientWhereSql() . '
-                AND session_kind NOT IN ("playlist","api")
+                AND session_kind NOT IN (\'playlist\',\'api\')
             '
         );
         $st->execute([':u' => $username]);
@@ -305,7 +399,7 @@ final class CdnSession
             'SELECT username, COUNT(*) AS c FROM cdn_sessions
               WHERE ' . self::activeWhereSql(time()) . '
                 AND ' . self::publicClientWhereSql() . '
-                AND session_kind NOT IN ("playlist","api")
+                AND session_kind NOT IN (\'playlist\',\'api\')
               GROUP BY username'
         )->fetchAll();
         $out = [];
@@ -323,16 +417,16 @@ final class CdnSession
         Database::run(
             'UPDATE cdn_sessions
                 SET idle_timeout = CASE
-                    WHEN session_kind = "movie" THEN 45
-                    WHEN session_kind = "series" THEN 45
-                    WHEN session_kind = "other" THEN 45
+                    WHEN session_kind = \'movie\' THEN ' . self::DIRECT_IDLE['movie'] . '
+                    WHEN session_kind = \'series\' THEN ' . self::DIRECT_IDLE['series'] . '
+                    WHEN session_kind = \'other\' THEN ' . self::DIRECT_IDLE['other'] . '
                     ELSE idle_timeout
                 END
-              WHERE status = "active"
+              WHERE status = \'active\'
                 AND direct_source = 1
                 AND active_requests = 0
-                AND session_kind IN ("movie","series","other")
-                AND idle_timeout > 45',
+                AND session_kind IN (\'movie\',\'series\',\'other\')
+                AND idle_timeout < ' . self::DIRECT_IDLE['movie'],
             [],
             'cdnsession.normalize_direct_idle'
         );
@@ -346,8 +440,8 @@ final class CdnSession
         Database::write(static function (PDO $pdo) use ($expiry, $now, &$closed): void {
             $st = $pdo->prepare(
                 'UPDATE cdn_sessions
-                    SET status = "closed", close_reason = "idle_timeout", ended_epoch = :now
-                  WHERE status = "active" AND ' . $expiry . ' < :now2'
+                    SET status = \'closed\', close_reason = \'idle_timeout\', ended_epoch = :now
+                  WHERE status = \'active\' AND ' . $expiry . ' < :now2'
             );
             $st->execute([':now' => $now, ':now2' => $now]);
             $closed = $st->rowCount();
@@ -375,7 +469,7 @@ final class CdnSession
      */
     private static function effectiveExpirySqlForSweep(string $table = 'cdn_sessions'): string
     {
-        $internal = '(' . $table . '.client_ip IN ("127.0.0.1", "::1", "", "-"))';
+        $internal = '(' . $table . '.client_ip IN (\'127.0.0.1\', \'::1\', \'\', \'-\'))';
         return '(CASE
             WHEN ' . $internal . '
                 THEN ' . $table . '.last_seen_epoch + MIN(' . $table . '.idle_timeout, 180)
@@ -387,15 +481,21 @@ final class CdnSession
     public static function live(array $filters = [], int $limit = 200): array
     {
         $key = 'sessions_' . md5(json_encode([$filters, $limit], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        return Cache::remember($key, 2, static function () use ($filters, $limit): array {
-            $sql = 'SELECT * FROM cdn_sessions WHERE ' . self::activeWhereSql(time());
+        return Cache::remember($key, 1, static function () use ($filters, $limit): array {
+            $sql = 'SELECT s.*,
+                           ' . self::directEffectiveSql('s') . ' AS effective_direct_source,
+                           COALESCE(n.label, CASE WHEN s.lb_id > 0 THEN n.public_ip ELSE \'main\' END, \'main\') AS lb_label,
+                           COALESCE(n.public_ip, \'\') AS lb_ip
+                      FROM cdn_sessions s
+                 LEFT JOIN lb_nodes n ON n.id = s.lb_id
+                     WHERE ' . self::activeWhereSql(time(), 's');
             $params = [];
-            if (empty($filters['include_internal'])) { $sql .= ' AND ' . self::publicClientWhereSql(); }
-            if (!empty($filters['username'])) { $sql .= ' AND username LIKE :u'; $params[':u'] = '%' . $filters['username'] . '%'; }
-            if (!empty($filters['kind'])) { $sql .= ' AND session_kind = :k'; $params[':k'] = $filters['kind']; }
-            if (!empty($filters['ip'])) { $sql .= ' AND client_ip LIKE :i'; $params[':i'] = '%' . $filters['ip'] . '%'; }
-            if (!empty($filters['direct'])) { $sql .= ' AND direct_source = 1'; }
-            $sql .= ' ORDER BY last_seen_epoch DESC LIMIT ' . max(1, min(1000, $limit));
+            if (empty($filters['include_internal'])) { $sql .= ' AND ' . self::publicClientWhereSql('s'); }
+            if (!empty($filters['username'])) { $sql .= ' AND s.username LIKE :u'; $params[':u'] = '%' . $filters['username'] . '%'; }
+            if (!empty($filters['kind'])) { $sql .= ' AND s.session_kind = :k'; $params[':k'] = $filters['kind']; }
+            if (!empty($filters['ip'])) { $sql .= ' AND s.client_ip LIKE :i'; $params[':i'] = '%' . $filters['ip'] . '%'; }
+            if (!empty($filters['direct'])) { $sql .= ' AND ' . self::directEffectiveSql('s') . ' = 1'; }
+            $sql .= ' ORDER BY s.last_seen_epoch DESC LIMIT ' . max(1, min(1000, $limit));
             $stmt = Database::pdo()->prepare($sql);
             $stmt->execute($params);
             return $stmt->fetchAll();

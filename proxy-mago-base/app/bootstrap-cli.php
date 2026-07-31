@@ -17,7 +17,7 @@ foreach ([
     'RequestContext', 'RequestLog', 'CredentialGuard', 'CdnSession', 'AuditTimeline',
     'DirectSourceParser', 'DirectCatalog', 'DirectSource',
     'Divergence', 'PlaylistRewriter',
-    'StreamProxy', 'HealthCheck', 'JobRunner', 'XuiSyncConfig', 'XuiReadOnly',
+    'StreamProxy', 'HealthCheck', 'JobRunner', 'XuiSyncConfig', 'XuiReadOnly', 'XuiAdmin', 'UserIpLock',
     'XuiSyncService', 'RestreamRuntime', 'UserIntelligence',
     'LbCrypto', 'LbKeyring', 'LbSsh', 'LbNode', 'LbPackageBuilder', 'LbInstaller', 'LbTelemetry', 'LbRouter',
 ] as $class) {

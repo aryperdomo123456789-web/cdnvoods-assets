@@ -44,13 +44,51 @@ final class JobRunner
         'session_sweep'     => ['Encerra sessões locais ociosas da CDN e mantém o contador próprio', 10],
         'consolidate_runtime' => ['Consolida proxy_user_runtime para o painel ao vivo', 10],
         'detect_inconsistency' => ['Detecta divergências (swap, acima do limite, órfãos)', 30],
-        'metrics_rollup'    => ['Grava KPIs de conexão da CDN (ativos, picos, direct source)', 30],
+        'metrics_rollup_light' => ['Grava KPIs leves da CDN para o painel ao vivo', 30],
+        'metrics_rollup_analytics' => ['Grava snapshots analíticos (top hosts/players/kinds)', 300],
+        'metrics_rollup'    => ['Alias legado do rollup leve da CDN', 30],
         'cleanup'           => ['Limpeza de eventos antigos, rate_limit e job_runs', 3600],
         'repair_retry'      => ['Reprocessa matching de requests que falharam', 300],
         'lb_probe'          => ['Coleta CPU/RAM/banda dos LBs por SSH e atualiza saúde', 30],
         'lb_rebalance'      => ['Reavalia usuários em modo auto e escolhe o melhor LB', 60],
         'lb_cleanup'        => ['Limpa métricas antigas dos LBs', 3600],
     ];
+
+    private const FAST_PROFILE = [
+        'xui_sync_activity',
+        'xui_sync_users',
+        'match_sessions',
+        'session_sweep',
+        'consolidate_runtime',
+        'lb_probe',
+        'lb_rebalance',
+    ];
+
+    private const HEAVY_PROFILE = [
+        'xui_sync_streams',
+        'direct_enrich',
+        'direct_consolidate',
+        'detect_inconsistency',
+        'metrics_rollup_analytics',
+        'cleanup',
+        'repair_retry',
+        'lb_cleanup',
+    ];
+
+    public static function fastProfile(): array
+    {
+        return self::FAST_PROFILE;
+    }
+
+    public static function heavyProfile(): array
+    {
+        return self::HEAVY_PROFILE;
+    }
+
+    public static function isFastJob(string $jobName): bool
+    {
+        return in_array($jobName, self::FAST_PROFILE, true);
+    }
 
     /**
      * @param callable(array &$stats): void $fn  recebe ['processed'=>0,'failed'=>0,'details'=>[]]
@@ -90,7 +128,7 @@ final class JobRunner
 
         Database::run(
             'INSERT INTO job_runs (job_name, run_id, purpose, trigger_source, started_at, started_epoch, status, host)
-             VALUES (:n,:r,:p,:t,:sa,:se,"running",:h)',
+             VALUES (:n,:r,:p,:t,:sa,:se,\'running\',:h)',
             [
                 ':n' => $jobName, ':r' => $runId, ':p' => $purpose, ':t' => $trigger,
                 ':sa' => date('c'), ':se' => time(),
@@ -102,7 +140,7 @@ final class JobRunner
             'INSERT INTO job_state (job_name, purpose, interval_seconds, running, running_since_epoch, last_run_id, updated_at)
              VALUES (:n,:p,:i,1,:se,:r,:up)
              ON CONFLICT(job_name) DO UPDATE SET running=1, running_since_epoch=excluded.running_since_epoch,
-               last_run_id=excluded.last_run_id, current_step="", updated_at=excluded.updated_at',
+               last_run_id=excluded.last_run_id, current_step=\'\', updated_at=excluded.updated_at',
             [':n' => $jobName, ':p' => $purpose, ':i' => $interval, ':se' => time(), ':r' => $runId, ':up' => date('c')],
             'job_state.running'
         );
@@ -156,7 +194,7 @@ final class JobRunner
                 last_status, last_duration_ms, last_processed, last_failed, last_error, next_run_epoch,
                 total_runs, total_failures, updated_at, running, running_since_epoch, last_run_id,
                 current_step, consecutive_failures, circuit_open_until, circuit_reason, max_duration_ms)
-             VALUES (:n,:p,:i,:la,:le,:st,:d,:pr,:fa,:er,:nr,1,:tf,:up,0,0,:rid,"",:cf,:cu,:cr,:d2)
+             VALUES (:n,:p,:i,:la,:le,:st,:d,:pr,:fa,:er,:nr,1,:tf,:up,0,0,:rid,\'\',:cf,:cu,:cr,:d2)
              ON CONFLICT(job_name) DO UPDATE SET
                 purpose=excluded.purpose,
                 interval_seconds=excluded.interval_seconds,
@@ -174,7 +212,7 @@ final class JobRunner
                 running=0,
                 running_since_epoch=0,
                 last_run_id=excluded.last_run_id,
-                current_step="",
+                current_step=\'\',
                 consecutive_failures=excluded.consecutive_failures,
                 circuit_open_until=excluded.circuit_open_until,
                 circuit_reason=excluded.circuit_reason,
@@ -269,8 +307,14 @@ final class JobRunner
     {
         $dir = dirname(__DIR__) . '/storage/cache';
         if (!is_dir($dir)) { @mkdir($dir, 0775, true); }
-        $fh = @fopen($dir . '/job-' . preg_replace('/[^a-z0-9_]/i', '_', $jobName) . '.lock', 'c+');
+        $path = $dir . '/job-' . preg_replace('/[^a-z0-9_]/i', '_', $jobName) . '.lock';
+        $fh = @fopen($path, 'c+');
+        if ($fh === false && is_file($path) && !is_writable($path)) {
+            @unlink($path);
+            $fh = @fopen($path, 'c+');
+        }
         if ($fh === false) { return null; }
+        @chmod($path, 0664);
         if (!flock($fh, LOCK_EX | LOCK_NB)) {
             fclose($fh);
             return null;
@@ -327,8 +371,39 @@ final class JobRunner
         Audit::log('job_circuit_reset', $jobName);
     }
 
+    /** Limpa jobs presos em running por tempo demais. */
+    public static function recoverStaleRunning(int $graceSeconds = 600): int
+    {
+        $graceSeconds = max(60, $graceSeconds);
+        $now = time();
+        $staleSince = $now - $graceSeconds;
+        $affected = 0;
+        Database::write(static function (PDO $pdo) use ($staleSince, $now, &$affected): void {
+            $st = $pdo->prepare(
+                'UPDATE job_state
+                    SET running = 0,
+                        running_since_epoch = 0,
+                        current_step = "",
+                        updated_at = :updated
+                  WHERE running = 1
+                    AND running_since_epoch > 0
+                    AND running_since_epoch < :cut'
+            );
+            $st->execute([
+                ':updated' => date('c', $now),
+                ':cut' => $staleSince,
+            ]);
+            $affected = $st->rowCount();
+        }, 'job_state.recover_stale');
+        if ($affected > 0) {
+            Audit::log('job_stale_recovered', sprintf('%d job(s) stale running limpo(s)', $affected), '-', 'job');
+        }
+        return $affected;
+    }
+
     public static function states(): array
     {
+        self::recoverStaleRunning();
         $rows = Database::pdo()->query('SELECT * FROM job_state ORDER BY job_name ASC')->fetchAll();
         $byName = [];
         foreach ($rows as $r) { $byName[$r['job_name']] = $r; }

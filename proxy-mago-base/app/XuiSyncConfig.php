@@ -27,6 +27,7 @@ final class XuiSyncConfig
         }
         $stmt = Database::pdo()->prepare(
             'UPDATE xui_sync_config SET host=:h, port=:p, database_name=:d, username=:u, password=:pw,
+             api_url=:apiu, api_token=:apit,
              use_tls=:tls, sync_enabled=:en, sync_interval_seconds=:si, users_interval_seconds=:ui,
              streams_interval_seconds=:sti, connect_timeout_seconds=:ct, read_timeout_seconds=:rt,
              updated_at=:up WHERE id = 1'
@@ -37,6 +38,8 @@ final class XuiSyncConfig
             ':d' => trim((string) ($data['database_name'] ?? 'xtream_iptvpro')),
             ':u' => trim((string) ($data['username'] ?? '')),
             ':pw' => $password,
+            ':apiu' => trim((string) ($data['api_url'] ?? ($current['api_url'] ?? ''))),
+            ':apit' => trim((string) ($data['api_token'] ?? ($current['api_token'] ?? ''))),
             ':tls' => !empty($data['use_tls']) ? 1 : 0,
             ':en' => !empty($data['sync_enabled']) ? 1 : 0,
             ':si' => max(2, (int) ($data['sync_interval_seconds'] ?? 5)),

@@ -21,7 +21,11 @@ $trigger = (string) ($opts['trigger'] ?? 'cron');
 $profile = (string) ($opts['profile'] ?? 'all');
 $profile = preg_replace('/[^a-z0-9_-]/i', '', $profile) ?: 'all';
 $lockPath = dirname(__DIR__) . '/storage/cache/jobs-run-' . $profile . '.lock';
-$lockHandle = fopen($lockPath, 'c+');
+$lockHandle = @fopen($lockPath, 'c+');
+if ($lockHandle === false && is_file($lockPath) && !is_writable($lockPath)) {
+    @unlink($lockPath);
+    $lockHandle = @fopen($lockPath, 'c+');
+}
 if ($lockHandle === false) {
     fwrite(STDERR, "[fatal] não foi possível abrir lock de jobs\n");
     exit(1);
@@ -68,7 +72,10 @@ function job_callable(string $name): callable
         case 'detect_inconsistency':
             return fn (array &$s) => RestreamRuntime::detectInconsistencies($s);
         case 'metrics_rollup':
-            return fn (array &$s) => RestreamRuntime::metricsRollup($s);
+        case 'metrics_rollup_light':
+            return fn (array &$s) => RestreamRuntime::metricsRollupLight($s);
+        case 'metrics_rollup_analytics':
+            return fn (array &$s) => RestreamRuntime::metricsRollupAnalytics($s);
         case 'cleanup':
             return fn (array &$s) => RestreamRuntime::cleanup($s);
         case 'repair_retry':
@@ -99,17 +106,9 @@ function run_job(string $name, string $trigger): array
 function profile_jobs(string $profile): array
 {
     $all = array_keys(JobRunner::CATALOG);
-    $fast = [
-        'xui_sync_activity',
-        'xui_sync_users',
-        'match_sessions',
-        'session_sweep',
-        'consolidate_runtime',
-        'metrics_rollup',
-    ];
     return match ($profile) {
-        'fast' => $fast,
-        'heavy' => array_values(array_diff($all, $fast)),
+        'fast' => JobRunner::fastProfile(),
+        'heavy' => JobRunner::heavyProfile(),
         default => $all,
     };
 }

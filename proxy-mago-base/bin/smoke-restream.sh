@@ -21,21 +21,21 @@ exit(0);'
 check "todas as tabelas de restreamento existem" $?
 
 echo "==> 2. catálogo de jobs"
-$PHP bin/jobs-run.php --list >/dev/null 2>&1
+timeout 15s $PHP bin/jobs-run.php --list >/dev/null 2>&1
 check "bin/jobs-run.php --list" $?
 
 echo "==> 3. tick de jobs locais (sem XUI)"
-$PHP bin/jobs-run.php --job=consolidate_runtime --force >/dev/null 2>&1
+timeout 20s $PHP bin/jobs-run.php --job=consolidate_runtime --force >/dev/null 2>&1
 check "consolidate_runtime" $?
-$PHP bin/jobs-run.php --job=detect_inconsistency --force >/dev/null 2>&1
+timeout 20s $PHP bin/jobs-run.php --job=detect_inconsistency --force >/dev/null 2>&1
 check "detect_inconsistency" $?
-$PHP bin/jobs-run.php --job=cleanup --force >/dev/null 2>&1
+timeout 25s $PHP bin/jobs-run.php --job=cleanup --force >/dev/null 2>&1
 check "cleanup" $?
 
 echo "==> 4. driver MySQL (opcional, só para espelho do XUI)"
 if $PHP -m | grep -qi '^pdo_mysql$'; then
   echo "  [ok]   pdo_mysql presente"
-  $PHP bin/xui-sync.php --test >/dev/null 2>&1
+  timeout 15s $PHP bin/xui-sync.php --test >/dev/null 2>&1
   if [ $? -eq 0 ]; then echo "  [ok]   conexão read-only com o XUI"; else echo "  [warn] XUI inacessível — stream não é afetado"; fi
 else
   echo "  [warn] pdo_mysql ausente: apt-get install -y php8.1-mysql && phpenmod pdo_mysql"

@@ -16,15 +16,16 @@ if (!empty($_GET['edit'])) { $edit = LbNode::find((int) $_GET['edit']); }
 $selected = (int) ($_GET['lb'] ?? ($nodes[0]['id'] ?? 0));
 $totals = LbRouter::totals();
 $sshReady = LbSsh::available();
-$keyring = LbKeyring::info();
 $csrf = csrf_token();
+$xuiUsersTotal = (int) Database::pdo()->query('SELECT COUNT(*) FROM xui_users_cache WHERE enabled = 1')->fetchColumn();
+$routes = LbRouter::routes(200);
 ?>
 <!doctype html>
 <html lang="pt-BR">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>CDN Voods — LB (músculos)</title>
+    <title>CDN Voods — LB (single XUI)</title>
     <link rel="stylesheet" href="/assets/style.css">
     <style>
         table{width:100%;font-size:13px}td,th{padding:5px 6px;vertical-align:top}
@@ -38,14 +39,20 @@ $csrf = csrf_token();
         .row{display:flex;gap:10px;flex-wrap:wrap}
         .row label{flex:1 1 160px}
         .inline{display:inline}
+        .compact-actions form,.compact-actions a{display:inline-block;margin:2px 4px 2px 0}
+        .compact-actions button{min-width:110px}
+        .simple-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+        .mini-card{background:#111827;padding:14px;border-radius:10px}
+        .mini-card h3{margin:0 0 8px;font-size:16px}
     </style>
 </head>
 <body class="page-bg">
 <header class="topbar">
-    <div><strong>CDN Voods</strong> <span>LB — cérebro decide, músculo entrega</span></div>
+    <div><strong>CDN Voods</strong> <span>LB simples — instalar, monitorar e mandar usuários</span></div>
     <nav>
         <a href="/auditoria.php">Auditoria</a>
         <a href="/restream.php">Ao vivo</a>
+        <a href="/xui.php">XUI</a>
         <a href="/dashboard.php">Domínios</a>
         <a href="/jobs.php">Jobs</a>
         <a href="/avancado.php">Avançado</a>
@@ -60,29 +67,67 @@ $csrf = csrf_token();
     <?php endif; ?>
 
     <section class="card full">
-        <h2>Visão geral</h2>
+        <h2>Painel simples do LB</h2>
         <div class="kpi">
             <div><span class="muted">LBs</span><b><?php echo (int) $totals['nodes']; ?></b></div>
             <div><span class="muted">Instalados</span><b><?php echo (int) $totals['installed']; ?></b></div>
             <div><span class="muted">Saudáveis</span><b><?php echo (int) $totals['healthy']; ?></b></div>
             <div><span class="muted">TX agregado</span><b><?php echo lh($totals['tx_mbps']); ?> Mbps</b></div>
-            <div><span class="muted">Rotas fixas</span><b><?php echo (int) $totals['routes_forced']; ?></b></div>
-            <div><span class="muted">Rotas auto</span><b><?php echo (int) $totals['routes_auto']; ?></b></div>
+            <div><span class="muted">Usuários no LB</span><b><?php echo (int) $totals['routes_forced']; ?></b></div>
+            <div><span class="muted">Usuários XUI</span><b><?php echo $xuiUsersTotal; ?></b></div>
         </div>
-        <p class="muted">O cérebro (<code>45.140.192.237</code>) mantém painel, banco e rastreabilidade.
-           Os músculos só recebem o pacote mínimo de proxy e devolvem telemetria.</p>
+        <p class="muted">Fluxo que importa aqui: cadastrar o LB, instalar, acompanhar a saúde
+           e escolher se o tráfego fica no <code>main</code> ou vai para o LB.</p>
     </section>
 
     <section class="card full">
-        <h2>1. Inventário de LBs</h2>
+        <h2>1. Cadastrar LB</h2>
+        <p class="muted">Preencha só o necessário para instalar.</p>
+        <form method="post" action="/save-lb.php">
+            <input type="hidden" name="csrf_token" value="<?php echo lh($csrf); ?>">
+            <input type="hidden" name="id" value="<?php echo (int) ($edit['id'] ?? 0); ?>">
+            <div class="row">
+                <label>Nome
+                    <input name="label" value="<?php echo lh($edit['label'] ?? ''); ?>" placeholder="LB-01">
+                </label>
+                <label>IP do LB
+                    <input name="public_ip" required value="<?php echo lh($edit['public_ip'] ?? ''); ?>" placeholder="143.14.168.78">
+                </label>
+                <label>Porta SSH
+                    <input name="ssh_port" type="number" value="<?php echo (int) ($edit['ssh_port'] ?? 22); ?>">
+                </label>
+                <label>Usuário root
+                    <input name="ssh_user" value="<?php echo lh($edit['ssh_user'] ?? 'root'); ?>" placeholder="root">
+                </label>
+                <label>Senha root
+                    <input name="ssh_password" type="password" placeholder="<?php echo $edit ? 'deixe em branco para manter' : ''; ?>">
+                </label>
+            </div>
+            <input type="hidden" name="ssh_host" value="<?php echo lh($edit['ssh_host'] ?? ''); ?>">
+            <input type="hidden" name="declared_bandwidth_mbps" value="<?php echo (int) ($edit['declared_bandwidth_mbps'] ?? 10000); ?>">
+            <input type="hidden" name="weight" value="<?php echo (int) ($edit['weight'] ?? 100); ?>">
+            <input type="hidden" name="max_users_soft" value="<?php echo (int) ($edit['max_users_soft'] ?? 0); ?>">
+            <input type="hidden" name="max_users_hard" value="<?php echo (int) ($edit['max_users_hard'] ?? 0); ?>">
+            <input type="hidden" name="max_mbps_soft" value="<?php echo (int) ($edit['max_mbps_soft'] ?? 0); ?>">
+            <input type="hidden" name="max_mbps_hard" value="<?php echo (int) ($edit['max_mbps_hard'] ?? 0); ?>">
+            <p>
+                <label><input type="checkbox" name="enabled" <?php echo (!$edit || (int) $edit['enabled'] === 1) ? 'checked' : ''; ?>> ativo</label>
+                <label><input type="checkbox" name="auto_install" <?php echo (!$edit || (int) ($edit['auto_install'] ?? 1) === 1) ? 'checked' : ''; ?>> instalar automaticamente ao salvar</label>
+            </p>
+            <button type="submit"><?php echo $edit ? 'Salvar alterações' : 'Salvar LB'; ?></button>
+            <?php if ($edit): ?> <a href="/lb.php">cancelar edição</a><?php endif; ?>
+        </form>
+    </section>
+
+    <section class="card full">
+        <h2>2. LBs cadastrados</h2>
         <table>
             <thead><tr>
-                <th>Nome</th><th>IP</th><th>Auth</th><th>SO</th><th>CPU/RAM</th><th>Perfil</th>
-                <th>Banda decl./medida</th><th>Instalação</th><th>Saúde</th><th>Score</th><th>Ações</th>
+                <th>LB</th><th>Instalação</th><th>Saúde</th><th>Telemetria</th><th>Ações</th>
             </tr></thead>
             <tbody id="lbrows">
             <?php if (!$nodes): ?>
-                <tr><td colspan="11" class="muted">Nenhum LB cadastrado. Use o formulário abaixo.</td></tr>
+                <tr><td colspan="5" class="muted">Nenhum LB cadastrado ainda.</td></tr>
             <?php endif; ?>
             <?php foreach ($nodes as $n):
                 $m = LbTelemetry::latest((int) $n['id']);
@@ -95,43 +140,33 @@ $csrf = csrf_token();
                     <td><strong><?php echo lh($n['label']); ?></strong>
                         <?php if ((int) $n['drain_mode'] === 1): ?><span class="tag warn">drenando</span><?php endif; ?>
                         <?php if ((int) $n['enabled'] !== 1): ?><span class="tag bad">off</span><?php endif; ?>
+                        <div class="muted"><?php echo lh($n['public_ip']); ?> · <?php echo lh($n['ssh_user'] . ':' . $n['ssh_port']); ?></div>
+                        <div class="muted"><?php echo lh(trim($n['os_name'] . ' ' . $n['os_version']) ?: 'SO pendente'); ?></div>
                     </td>
-                    <td><?php echo lh($n['public_ip']); ?><div class="muted"><?php echo lh($n['ssh_user'] . ':' . $n['ssh_port']); ?></div></td>
-                    <td>
-                        <?php $keyOn = (int) ($n['key_installed'] ?? 0) === 1; ?>
-                        <span class="tag <?php echo $keyOn ? 'ok' : 'warn'; ?>"><?php echo $keyOn ? 'chave' : 'senha'; ?></span>
-                        <div class="muted"><?php echo $keyOn
-                            ? lh(substr((string) ($n['key_fingerprint'] ?? ''), 0, 22) . '…')
-                            : 'onboarding por senha root'; ?></div>
-                    </td>
-                    <td><?php echo lh(trim($n['os_name'] . ' ' . $n['os_version'])) ?: '<span class="muted">—</span>'; ?></td>
-                    <td><?php echo (int) $n['cpu_cores']; ?> vCPU / <?php echo round(((int) $n['ram_mb']) / 1024, 1); ?> GB</td>
-                    <td><?php echo lh($n['profile'] ?? ''); ?></td>
-                    <td><?php echo (int) $n['declared_bandwidth_mbps']; ?> / <?php echo (int) $n['measured_bandwidth_mbps']; ?> Mbps</td>
                     <td><span class="tag <?php echo $ic; ?>"><?php echo lh($inst); ?></span>
                         <div class="muted"><?php echo lh($n['install_step']); ?></div></td>
                     <td><span class="tag <?php echo $hc; ?>"><?php echo lh($health ?: 'unknown'); ?></span>
-                        <div class="muted">cpu <?php echo lh($m['cpu_pct'] ?? 0); ?>% · tx <?php echo lh($m['tx_mbps'] ?? 0); ?> Mbps</div></td>
-                    <td><?php echo round(LbRouter::score($n), 1); ?></td>
+                        <div class="muted"><?php echo lh($n['health_message'] ?? ''); ?></div></td>
                     <td>
+                        <div>CPU: <strong><?php echo lh($m['cpu_pct'] ?? 0); ?>%</strong></div>
+                        <div>RAM livre: <strong><?php echo lh($m['ram_free_mb'] ?? 0); ?> MB</strong></div>
+                        <div>Disco livre: <strong><?php echo lh($m['disk_free_gb'] ?? 0); ?> GB</strong></div>
+                        <div>RX/TX: <strong><?php echo lh($m['rx_mbps'] ?? 0); ?>/<?php echo lh($m['tx_mbps'] ?? 0); ?> Mbps</strong></div>
+                        <div>Sessões: <strong><?php echo lh($m['sessions_active'] ?? 0); ?></strong></div>
+                    </td>
+                    <td class="compact-actions">
                         <form method="post" action="/lb-action.php" class="inline">
                             <input type="hidden" name="csrf_token" value="<?php echo lh($csrf); ?>">
                             <input type="hidden" name="lb_id" value="<?php echo (int) $n['id']; ?>">
                             <button name="action" value="test">Testar</button>
-                            <button name="action" value="promote_key">Instalar chave</button>
                             <button name="action" value="install" onclick="return confirm('Instalar o pacote de LB nesta VPS?')">Instalar</button>
                             <button name="action" value="sync">Sincronizar</button>
-                            <?php if ((int) ($n['key_installed'] ?? 0) === 1 && (string) ($n['ssh_password_enc'] ?? '') !== ''): ?>
-                                <button name="action" value="forget_password" onclick="return confirm('Descartar a senha root? O acesso ficará apenas por chave.')">Descartar senha</button>
-                            <?php endif; ?>
                             <button name="action" value="<?php echo (int) $n['enabled'] === 1 ? 'disable' : 'enable'; ?>">
                                 <?php echo (int) $n['enabled'] === 1 ? 'Desativar' : 'Ativar'; ?>
                             </button>
-                            <button name="action" value="drain" formmethod="post">Drenar</button>
-                            <input type="hidden" name="value" value="<?php echo (int) $n['drain_mode'] === 1 ? '0' : '1'; ?>">
                             <button name="action" value="delete" onclick="return confirm('Remover este LB do inventário?')">Remover</button>
                         </form>
-                        <a href="/lb.php?lb=<?php echo (int) $n['id']; ?>">log</a> ·
+                        <a href="/lb.php?lb=<?php echo (int) $n['id']; ?>">ver log</a> ·
                         <a href="/lb.php?edit=<?php echo (int) $n['id']; ?>">editar</a>
                     </td>
                 </tr>
@@ -141,94 +176,31 @@ $csrf = csrf_token();
     </section>
 
     <section class="card full">
-        <h2>1b. Chaveiro SSH do cérebro</h2>
-        <p class="muted">Um único par Ed25519 atende todos os músculos. A senha root serve só para o
-           primeiro acesso: assim que a chave entra no <code>authorized_keys</code>, tudo passa a rodar por chave.
-           A chave privada fica em <code>storage/ssh/lb_ed25519</code> (0600) e nunca aparece no painel nem em log.</p>
-        <?php if (!$keyring['keygen']): ?>
-            <div class="alert">ssh-keygen ausente. Rode: <code>apt-get install -y openssh-client</code></div>
-        <?php endif; ?>
-        <p>
-            Status:
-            <span class="tag <?php echo $keyring['exists'] ? 'ok' : 'warn'; ?>">
-                <?php echo $keyring['exists'] ? 'chave pronta' : 'sem chave'; ?>
-            </span>
-            <span class="muted">
-                <?php echo lh($keyring['fingerprint'] ?: '—'); ?>
-                <?php echo $keyring['created_at'] ? ' · criada em ' . lh($keyring['created_at']) : ''; ?>
-            </span>
-        </p>
-        <?php if ($keyring['public_key'] !== ''): ?>
-            <p><textarea rows="2" readonly style="width:100%"><?php echo lh($keyring['public_key']); ?></textarea></p>
-        <?php endif; ?>
-        <form method="post" action="/lb-action.php" class="inline">
-            <input type="hidden" name="csrf_token" value="<?php echo lh($csrf); ?>">
-            <input type="hidden" name="lb_id" value="0">
-            <button name="action" value="keygen"><?php echo $keyring['exists'] ? 'Verificar chaveiro' : 'Gerar chave Ed25519'; ?></button>
-        </form>
-        <form method="post" action="/lb-action.php" class="inline">
-            <input type="hidden" name="csrf_token" value="<?php echo lh($csrf); ?>">
-            <input type="hidden" name="lb_id" value="0">
-            <input type="hidden" name="value" value="rotate">
-            <button name="action" value="keygen" onclick="return confirm('Rotacionar a chave? Cada LB precisará receber a nova chave (botão Instalar chave).')">Rotacionar chave</button>
-        </form>
-    </section>
-
-    <section class="card full">
-        <h2>2. Cadastro / edição de LB</h2>
-        <p class="muted">A senha root é gravada criptografada e usada apenas no onboarding, até a chave
-           Ed25519 do cérebro assumir. Nenhum log guarda credencial.</p>
-        <form method="post" action="/save-lb.php">
-            <input type="hidden" name="csrf_token" value="<?php echo lh($csrf); ?>">
-            <input type="hidden" name="id" value="<?php echo (int) ($edit['id'] ?? 0); ?>">
-            <div class="row">
-                <label>Nome do LB<input name="label" required value="<?php echo lh($edit['label'] ?? ''); ?>" placeholder="LB-01"></label>
-                <label>IP público<input name="public_ip" required value="<?php echo lh($edit['public_ip'] ?? ''); ?>" placeholder="143.14.168.78"></label>
-                <label>Host SSH (opcional)<input name="ssh_host" value="<?php echo lh($edit['ssh_host'] ?? ''); ?>"></label>
-                <label>Porta SSH<input name="ssh_port" type="number" value="<?php echo (int) ($edit['ssh_port'] ?? 22); ?>"></label>
-                <label>Usuário SSH<input name="ssh_user" value="<?php echo lh($edit['ssh_user'] ?? 'root'); ?>"></label>
-                <label>Senha root<input name="ssh_password" type="password" placeholder="<?php echo $edit ? 'manter a atual' : ''; ?>"></label>
-            </div>
-            <div class="row">
-                <label>Banda declarada (Mbps)<input name="declared_bandwidth_mbps" type="number" value="<?php echo (int) ($edit['declared_bandwidth_mbps'] ?? 10000); ?>"></label>
-                <label>Peso inicial<input name="weight" type="number" value="<?php echo (int) ($edit['weight'] ?? 100); ?>"></label>
-                <label>Máx. usuários (soft)<input name="max_users_soft" type="number" value="<?php echo (int) ($edit['max_users_soft'] ?? 0); ?>"></label>
-                <label>Máx. usuários (hard)<input name="max_users_hard" type="number" value="<?php echo (int) ($edit['max_users_hard'] ?? 0); ?>"></label>
-                <label>Máx. Mbps (soft)<input name="max_mbps_soft" type="number" value="<?php echo (int) ($edit['max_mbps_soft'] ?? 0); ?>"></label>
-                <label>Máx. Mbps (hard)<input name="max_mbps_hard" type="number" value="<?php echo (int) ($edit['max_mbps_hard'] ?? 0); ?>"></label>
-            </div>
-            <p>
-                <label><input type="checkbox" name="enabled" <?php echo (!$edit || (int) $edit['enabled'] === 1) ? 'checked' : ''; ?>> habilitado</label>
-                <label><input type="checkbox" name="drain_mode" <?php echo ($edit && (int) $edit['drain_mode'] === 1) ? 'checked' : ''; ?>> drenando</label>
-                <label><input type="checkbox" name="auto_install" <?php echo (!$edit || (int) ($edit['auto_install'] ?? 1) === 1) ? 'checked' : ''; ?>>
-                    instalar automaticamente ao salvar (chave + pacote + configuração)</label>
-            </p>
-            <button type="submit">Salvar LB</button>
-            <?php if ($edit): ?> <a href="/lb.php">cancelar edição</a><?php endif; ?>
-        </form>
-    </section>
-
-    <section class="card full">
-        <h2>3. Log ao vivo da instalação<?php echo $selected ? ' — LB #' . (int) $selected : ''; ?></h2>
+        <h2>3. Log da instalação<?php echo $selected ? ' — LB #' . (int) $selected : ''; ?></h2>
         <p class="muted">Cada etapa (validate → handshake → detect → support → bootstrap → package → configure → smoke)
            grava início, fim, duração e resultado. Segredos são mascarados.</p>
         <div id="lblog">selecione um LB…</div>
     </section>
 
     <section class="card full">
-        <h2>4. Balanceamento por usuário do XUI</h2>
+        <h2>4. Mandar usuários para o LB</h2>
         <form method="post" action="/save-lb-route.php">
             <input type="hidden" name="csrf_token" value="<?php echo lh($csrf); ?>">
             <div class="row">
-                <label>Usuários (um por linha, vírgula ou espaço)
-                    <textarea name="usernames" rows="3" placeholder="P2on2325154215633"></textarea></label>
-                <label>Modo
-                    <select name="mode">
-                        <option value="main_only">main_only — fica no cérebro</option>
-                        <option value="forced">forced — sempre neste LB</option>
-                        <option value="auto">auto — cérebro escolhe por score</option>
+                <label>Escopo
+                    <select name="scope">
+                        <option value="selected">Somente os usuários digitados</option>
+                        <option value="all">Todos os usuários ativos do XUI</option>
                     </select></label>
-                <label>LB de destino (para forced)
+                <label>Usuário(s)
+                    <textarea name="usernames" rows="3" placeholder="digite um usuário por linha ou separados por vírgula"></textarea></label>
+                <label>Ação
+                    <select name="mode">
+                        <option value="forced">Mandar para este LB</option>
+                        <option value="main_only">Voltar para o main</option>
+                        <option value="auto">Automático</option>
+                    </select></label>
+                <label>LB de destino
                     <select name="lb_id">
                         <option value="0">—</option>
                         <?php foreach ($nodes as $n): ?>
@@ -236,20 +208,18 @@ $csrf = csrf_token();
                         <?php endforeach; ?>
                     </select></label>
             </div>
-            <button type="submit">Aplicar roteamento</button>
+            <button type="submit">Aplicar</button>
         </form>
 
         <table>
-            <thead><tr><th>Usuário</th><th>Modo</th><th>LB</th><th>Motivo</th><th>Atualizado</th></tr></thead>
+            <thead><tr><th>Usuário</th><th>Status</th><th>LB</th><th>Atualizado</th></tr></thead>
             <tbody>
-            <?php $routes = LbRouter::routes(200); ?>
-            <?php if (!$routes): ?><tr><td colspan="5" class="muted">Nenhuma rota — todos os usuários continuam no cérebro.</td></tr><?php endif; ?>
+            <?php if (!$routes): ?><tr><td colspan="4" class="muted">Nenhuma rota salva. Se nada for configurado, os usuários continuam no main.</td></tr><?php endif; ?>
             <?php foreach ($routes as $r): ?>
                 <tr>
                     <td><?php echo lh($r['username']); ?></td>
-                    <td><span class="tag <?php echo $r['mode'] === 'main_only' ? 'warn' : 'ok'; ?>"><?php echo lh($r['mode']); ?></span></td>
+                    <td><span class="tag <?php echo $r['mode'] === 'main_only' ? 'warn' : 'ok'; ?>"><?php echo lh($r['mode'] === 'forced' ? 'lb' : ($r['mode'] === 'main_only' ? 'main' : $r['mode'])); ?></span></td>
                     <td><?php echo lh($r['lb_label'] ?? '—'); ?> <span class="muted"><?php echo lh($r['lb_ip'] ?? ''); ?></span></td>
-                    <td class="muted"><?php echo lh($r['reason']); ?></td>
                     <td class="muted"><?php echo lh($r['updated_at']); ?></td>
                 </tr>
             <?php endforeach; ?>
@@ -258,16 +228,21 @@ $csrf = csrf_token();
     </section>
 
     <section class="card full">
-        <h2>5. Rotinas do LB</h2>
-        <?php foreach (['lb_probe', 'lb_rebalance', 'lb_cleanup'] as $job): ?>
-            <form method="post" action="/run-job.php" class="inline">
-                <input type="hidden" name="csrf_token" value="<?php echo lh($csrf); ?>">
-                <input type="hidden" name="back" value="lb">
-                <input type="hidden" name="job" value="<?php echo lh($job); ?>">
-                <button type="submit"><?php echo lh($job); ?></button>
-            </form>
-        <?php endforeach; ?>
-        <p class="muted">Em produção o cron do <code>bin/jobs-run.php</code> já dispara estas rotinas sozinho.</p>
+        <h2>5. O que esse painel faz</h2>
+        <div class="simple-grid">
+            <div class="mini-card">
+                <h3>Instalação</h3>
+                <div class="muted">Cadastra por IP, porta, usuário root e senha root.</div>
+            </div>
+            <div class="mini-card">
+                <h3>Telemetria</h3>
+                <div class="muted">Mostra saúde, CPU, RAM, disco, tráfego e sessões do servidor.</div>
+            </div>
+            <div class="mini-card">
+                <h3>Roteamento</h3>
+                <div class="muted">Você pode mandar um usuário específico ou todos os usuários do XUI para um LB.</div>
+            </div>
+        </div>
     </section>
 </main>
 

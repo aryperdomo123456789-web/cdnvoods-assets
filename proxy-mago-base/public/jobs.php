@@ -39,6 +39,7 @@ $db = Database::healthSnapshot();
     <nav>
         <a href="/auditoria.php">Auditoria</a>
         <a href="/restream.php">Ao vivo</a>
+        <a href="/xui.php">XUI</a>
         <a href="/dashboard.php">Domínios</a>
         <a href="/lb.php">LB</a>
         <a href="/avancado.php">Avançado</a>

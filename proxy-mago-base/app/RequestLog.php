@@ -27,31 +27,34 @@ final class RequestLog
     {
         $ok = Database::write(static function (PDO $pdo) use ($ctx, $originId, $tokenId, $reason, $sessionKey): void {
             $stmt = $pdo->prepare(
-                'INSERT OR IGNORE INTO proxy_request_events
-                 (request_id, ts, ts_epoch, client_ip, public_host, method, path, query_masked,
-                  route_kind, username, credential_fingerprint, stream_id, token_id, origin_id,
-                  status, bytes, user_agent, referer, reason, match_confidence, session_key)
-                 VALUES (:rid,:ts,:tse,:ip,:host,:method,:path,:q,:kind,:user,:fp,:sid,:tok,:orig,0,0,:ua,:ref,:reason,"pending",:skey)'
+                Database::insertIgnoreSql('proxy_request_events', [
+                    'request_id', 'ts', 'ts_epoch', 'client_ip', 'public_host', 'method', 'path', 'query_masked',
+                    'route_kind', 'username', 'credential_fingerprint', 'stream_id', 'token_id', 'origin_id',
+                    'status', 'bytes', 'user_agent', 'referer', 'reason', 'match_confidence', 'session_key',
+                ])
             );
             $stmt->execute([
-                ':rid' => $ctx->requestId,
+                ':request_id' => $ctx->requestId,
                 ':ts' => date('c'),
-                ':tse' => time(),
-                ':ip' => $ctx->clientIp,
-                ':host' => $ctx->publicHost,
+                ':ts_epoch' => time(),
+                ':client_ip' => $ctx->clientIp,
+                ':public_host' => $ctx->publicHost,
                 ':method' => $ctx->method,
                 ':path' => self::maskPath($ctx->path),
-                ':q' => $ctx->queryMasked,
-                ':kind' => $ctx->routeKind,
-                ':user' => $ctx->username,
-                ':fp' => $ctx->fingerprint,
-                ':sid' => $ctx->streamId,
-                ':tok' => $tokenId,
-                ':orig' => $originId,
-                ':ua' => $ctx->userAgent,
-                ':ref' => $ctx->referer,
+                ':query_masked' => $ctx->queryMasked,
+                ':route_kind' => $ctx->routeKind,
+                ':username' => $ctx->username,
+                ':credential_fingerprint' => $ctx->fingerprint,
+                ':stream_id' => $ctx->streamId,
+                ':token_id' => $tokenId,
+                ':origin_id' => $originId,
+                ':status' => 0,
+                ':bytes' => 0,
+                ':user_agent' => $ctx->userAgent,
+                ':referer' => $ctx->referer,
                 ':reason' => $reason,
-                ':skey' => $sessionKey,
+                ':match_confidence' => 'pending',
+                ':session_key' => $sessionKey,
             ]);
         }, 'requestlog.open');
         if ($ok) {
@@ -76,7 +79,7 @@ final class RequestLog
                 'UPDATE proxy_request_events
                  SET status = :st, bytes = :by, duration_ms = :ms, reason = :reason,
                      inconsistency = :inc, direct_host = :dh, hops = :hops,
-                     match_confidence = CASE WHEN :inc2 <> "" THEN "invalid" ELSE match_confidence END
+                     match_confidence = CASE WHEN :inc2 <> \'\' THEN \'invalid\' ELSE match_confidence END
                  WHERE request_id = :rid'
             );
             $stmt->execute([

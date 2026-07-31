@@ -32,6 +32,8 @@ require_once dirname(__DIR__) . '/app/HealthCheck.php';
 require_once dirname(__DIR__) . '/app/JobRunner.php';
 require_once dirname(__DIR__) . '/app/XuiSyncConfig.php';
 require_once dirname(__DIR__) . '/app/XuiReadOnly.php';
+require_once dirname(__DIR__) . '/app/XuiAdmin.php';
+require_once dirname(__DIR__) . '/app/UserIpLock.php';
 require_once dirname(__DIR__) . '/app/XuiSyncService.php';
 require_once dirname(__DIR__) . '/app/RestreamRuntime.php';
 require_once dirname(__DIR__) . '/app/UserIntelligence.php';

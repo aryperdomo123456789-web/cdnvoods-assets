@@ -28,6 +28,10 @@ final class AccessGuard
 
     public static function check(string $hostname, string $clientIp, string $userAgent, string $token = '', bool $applyRateLimit = true): array
     {
+        if ((string) Config::get('role', 'main') === 'lb') {
+            return self::checkLbMode($hostname, $clientIp, $userAgent, $token, $applyRateLimit);
+        }
+
         $alias = AliasRepository::findByHostname($hostname);
         if (!$alias) {
             return self::deny(404, 'unknown_alias');
@@ -100,6 +104,55 @@ final class AccessGuard
     private static function deny(int $code, string $reason): array
     {
         return ['ok' => false, 'code' => $code, 'reason' => $reason, 'alias' => null, 'origin' => null, 'token' => null];
+    }
+
+    private static function checkLbMode(string $hostname, string $clientIp, string $userAgent, string $token = '', bool $applyRateLimit = true): array
+    {
+        $origin = Config::get('xui_origin');
+        if (!is_array($origin) || empty($origin['host'])) {
+            return self::deny(503, 'lb_origin_missing');
+        }
+
+        $alias = [
+            'id' => 0,
+            'hostname' => $hostname,
+            'origin_id' => 0,
+            'origin_active' => 1,
+            'require_token' => 0,
+        ];
+
+        $uaFilterOn = (int) SettingsRepository::get('ua_filter_enabled', 0) === 1;
+        if ($uaFilterOn) {
+            $allowedUa = trim((string) SettingsRepository::get('allowed_user_agent', ''));
+            if ($allowedUa !== '' && stripos($userAgent, $allowedUa) === false) {
+                return self::deny(403, 'ua_blocked');
+            }
+        }
+
+        if ($applyRateLimit && !self::rateLimitOk($clientIp)) {
+            return self::deny(429, 'rate_limited');
+        }
+
+        return [
+            'ok' => true,
+            'code' => 200,
+            'reason' => 'ok_lb',
+            'alias' => $alias,
+            'origin' => [
+                'id' => 0,
+                'host' => (string) $origin['host'],
+                'port' => (int) ($origin['port'] ?? 80),
+                'scheme' => (string) ($origin['scheme'] ?? 'http'),
+                'base_path' => '',
+                'auth_user' => '',
+                'auth_pass' => '',
+                'name' => 'XUI',
+                'type' => 'a',
+                'host_header' => (string) ($origin['host_header'] ?? ''),
+                'extra_hosts' => '',
+            ],
+            'token' => null,
+        ];
     }
 
     private static function rateLimitOk(string $ip): bool

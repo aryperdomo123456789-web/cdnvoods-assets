@@ -13,6 +13,29 @@ final class RestreamRuntime
 {
     public const ACTIVE_WINDOW = 90;   // segundos para considerar "ao vivo"
 
+    private static function jobsLateCountSql(int $now): string
+    {
+        $fast = array_map(
+            static fn(string $name): string => "'" . str_replace("'", "''", $name) . "'",
+            JobRunner::fastProfile()
+        );
+        return 'SELECT COUNT(*) FROM job_state
+                 WHERE job_name IN (' . implode(',', $fast) . ')
+                   AND next_run_epoch > 0
+                   AND next_run_epoch < ' . ($now - 120) . '
+                   AND running = 0';
+    }
+
+    private static function protectedHostSql(string $column = 'public_host'): string
+    {
+        return 'EXISTS (
+            SELECT 1
+              FROM aliases a
+             WHERE a.active = 1
+               AND lower(a.hostname) = lower(' . $column . ')
+        )';
+    }
+
     /* ---------------------------------------------------------------- jobs */
 
     public static function matchSessions(array &$stats): void
@@ -21,28 +44,42 @@ final class RestreamRuntime
         $since = time() - 300;
         JobRunner::step('carregar_eventos_pendentes');
         $events = $pdo->query(
-            'SELECT request_id, username, credential_fingerprint, client_ip, user_agent, stream_id, ts_epoch, session_key
+            'SELECT request_id, username, credential_fingerprint, client_ip, user_agent,
+                    stream_id, ts_epoch, session_key, route_kind, status, reason
              FROM proxy_request_events
-             WHERE ts_epoch >= ' . $since . ' AND match_confidence IN ("pending","low")
+             WHERE ts_epoch >= ' . $since . '
+               AND match_confidence IN (\'pending\',\'low\')
+               AND (
+                    status BETWEEN 200 AND 399
+                    OR (status = 0 AND session_key <> \'\')
+               )
+               AND username <> ""
+               AND ' . self::protectedHostSql('public_host') . '
              ORDER BY id DESC LIMIT 500'
         )->fetchAll();
         JobRunner::step('cruzar_com_xui', count($events) . ' evento(s)');
 
         $link = $pdo->prepare(
-            'INSERT OR IGNORE INTO proxy_session_links (request_id, activity_id, user_id, stream_id, matched_by, confidence, matched_at)
-             VALUES (:r,:a,:u,:s,:m,:c,:t)'
+            Database::insertIgnoreSql('proxy_session_links', [
+                'request_id', 'activity_id', 'user_id', 'stream_id', 'matched_by', 'confidence', 'matched_at',
+            ])
         );
-        $mark = $pdo->prepare('UPDATE proxy_request_events SET match_confidence = :c WHERE request_id = :r');
+        $mark = $pdo->prepare(
+            'UPDATE proxy_request_events
+                SET match_confidence = :c,
+                    match_reason = :m
+              WHERE request_id = :r'
+        );
         $markSession = $pdo->prepare(
             'UPDATE cdn_sessions SET xui_activity_id = :a, match_confidence = :c, match_reason = :m
-              WHERE session_key = :k AND :k <> ""'
+              WHERE session_key = :k AND :k <> \'\''
         );
 
         foreach ($events as $e) {
             $stats['processed']++;
             $user = self::userByEvent($e);
             if (!$user) {
-                $mark->execute([':c' => 'low', ':r' => $e['request_id']]);
+                $mark->execute([':c' => 'low', ':m' => 'unknown_user', ':r' => $e['request_id']]);
                 if (!empty($e['session_key'])) {
                     $markSession->execute([':a' => 0, ':c' => 'low', ':m' => 'unknown_user', ':k' => $e['session_key']]);
                 }
@@ -63,25 +100,31 @@ final class RestreamRuntime
                     $isDirect = (int) $isDirectSt->fetchColumn() === 1;
                 }
                 if ($isDirect) {
-                    $mark->execute([':c' => 'medium', ':r' => $e['request_id']]);
+                    $mark->execute([':c' => 'medium', ':m' => 'direct_source_runtime', ':r' => $e['request_id']]);
                     if (!empty($e['session_key'])) {
                         $markSession->execute([':a' => 0, ':c' => 'medium', ':m' => 'direct_source_runtime', ':k' => $e['session_key']]);
                     }
                     continue;
                 }
-                $mark->execute([':c' => 'low', ':r' => $e['request_id']]);
+                $mark->execute([':c' => 'low', ':m' => 'orphan_request', ':r' => $e['request_id']]);
                 if (!empty($e['session_key'])) {
                     $markSession->execute([':a' => 0, ':c' => 'low', ':m' => 'orphan_request', ':k' => $e['session_key']]);
                 }
+                $stats['details']['orphans'] = (int) ($stats['details']['orphans'] ?? 0) + 1;
                 continue;
             }
             [$best, $by, $conf] = self::scoreSessions($rows, $e);
             if ($best) {
                 $link->execute([
-                    ':r' => $e['request_id'], ':a' => (int) $best['activity_id'], ':u' => $userId,
-                    ':s' => (int) $best['stream_id'], ':m' => $by, ':c' => $conf, ':t' => date('c'),
+                    ':request_id' => $e['request_id'],
+                    ':activity_id' => (int) $best['activity_id'],
+                    ':user_id' => $userId,
+                    ':stream_id' => (int) $best['stream_id'],
+                    ':matched_by' => $by,
+                    ':confidence' => $conf,
+                    ':matched_at' => date('c'),
                 ]);
-                $mark->execute([':c' => $conf, ':r' => $e['request_id']]);
+                $mark->execute([':c' => $conf, ':m' => $by, ':r' => $e['request_id']]);
                 if (!empty($e['session_key'])) {
                     $markSession->execute([
                         ':a' => (int) $best['activity_id'], ':c' => $conf, ':m' => $by, ':k' => $e['session_key'],
@@ -162,6 +205,8 @@ final class RestreamRuntime
     {
         $pdo = Database::pdo();
         $since = time() - 300;
+        $hasRuntimeUptime = Database::tableHasColumn('proxy_user_runtime', 'uptime_start_epoch');
+        $hasRuntimeLbLabel = Database::tableHasColumn('proxy_user_runtime', 'last_lb_label');
         JobRunner::step('agregar_eventos_5m');
         $rows = $pdo->query(
             'SELECT username,
@@ -174,7 +219,10 @@ final class RestreamRuntime
                            COUNT(*) AS reqs,
                            COALESCE(SUM(bytes), 0) AS bytes
                       FROM proxy_request_events
-                     WHERE ts_epoch >= ' . $since . ' AND username <> "" AND status BETWEEN 200 AND 399
+                     WHERE ts_epoch >= ' . $since . '
+                       AND username <> ""
+                       AND status BETWEEN 200 AND 399
+                       AND ' . self::protectedHostSql('public_host') . '
                      GROUP BY username
                     UNION ALL
                     SELECT username,
@@ -191,29 +239,60 @@ final class RestreamRuntime
         )->fetchAll();
 
         $last = $pdo->prepare(
-            'SELECT public_host, client_ip, user_agent, route_kind, stream_id, ts
-             FROM proxy_request_events
-             WHERE username = :u AND status BETWEEN 200 AND 399
-             ORDER BY ts_epoch DESC LIMIT 1'
+                'SELECT public_host, client_ip, user_agent, route_kind, stream_id, ts
+                 FROM proxy_request_events
+                 WHERE username = :u
+                   AND status BETWEEN 200 AND 399
+                   AND ' . self::protectedHostSql('public_host') . '
+                 ORDER BY ts_epoch DESC LIMIT 1'
         );
+        $upsertColumns = [
+            'username', 'user_id', 'public_host_last_seen', 'client_ip_last_seen', 'user_agent_last_seen',
+            'active_connections_now', 'max_connections', 'last_activity_at', 'last_activity_epoch',
+            'last_route_kind', 'last_stream_id', 'last_stream_name', 'requests_5m', 'bytes_5m',
+            'health_status', 'updated_at', 'cdn_connections_now', 'xui_connections_now', 'divergence',
+            'count_source', 'direct_sessions_now',
+        ];
+        $upsertValues = [
+            ':u', ':uid', ':host', ':ip', ':ua', ':ac', ':mc', ':la', ':le', ':rk', ':sid', ':sname',
+            ':rq', ':by', ':hs', ':up', ':cdn', ':xui', ':div', ':src', ':ds',
+        ];
+        $upsertUpdate = [
+            'user_id=excluded.user_id',
+            'public_host_last_seen=excluded.public_host_last_seen',
+            'client_ip_last_seen=excluded.client_ip_last_seen',
+            'user_agent_last_seen=excluded.user_agent_last_seen',
+            'active_connections_now=excluded.active_connections_now',
+            'max_connections=excluded.max_connections',
+            'last_activity_at=excluded.last_activity_at',
+            'last_activity_epoch=excluded.last_activity_epoch',
+            'last_route_kind=excluded.last_route_kind',
+            'last_stream_id=excluded.last_stream_id',
+            'last_stream_name=excluded.last_stream_name',
+            'requests_5m=excluded.requests_5m',
+            'bytes_5m=excluded.bytes_5m',
+            'health_status=excluded.health_status',
+            'updated_at=excluded.updated_at',
+            'cdn_connections_now=excluded.cdn_connections_now',
+            'xui_connections_now=excluded.xui_connections_now',
+            'divergence=excluded.divergence',
+            'count_source=excluded.count_source',
+            'direct_sessions_now=excluded.direct_sessions_now',
+        ];
+        if ($hasRuntimeUptime) {
+            $upsertColumns[] = 'uptime_start_epoch';
+            $upsertValues[] = ':uptime';
+            $upsertUpdate[] = 'uptime_start_epoch=excluded.uptime_start_epoch';
+        }
+        if ($hasRuntimeLbLabel) {
+            $upsertColumns[] = 'last_lb_label';
+            $upsertValues[] = ':lb';
+            $upsertUpdate[] = 'last_lb_label=excluded.last_lb_label';
+        }
         $upsert = $pdo->prepare(
-            'INSERT INTO proxy_user_runtime
-             (username, user_id, public_host_last_seen, client_ip_last_seen, user_agent_last_seen,
-              active_connections_now, max_connections, last_activity_at, last_activity_epoch,
-              last_route_kind, last_stream_id, last_stream_name, requests_5m, bytes_5m, health_status, updated_at,
-              cdn_connections_now, xui_connections_now, divergence, count_source, direct_sessions_now)
-             VALUES (:u,:uid,:host,:ip,:ua,:ac,:mc,:la,:le,:rk,:sid,:sname,:rq,:by,:hs,:up,:cdn,:xui,:div,:src,:ds)
-             ON CONFLICT(username) DO UPDATE SET
-               user_id=excluded.user_id, public_host_last_seen=excluded.public_host_last_seen,
-               client_ip_last_seen=excluded.client_ip_last_seen, user_agent_last_seen=excluded.user_agent_last_seen,
-               active_connections_now=excluded.active_connections_now, max_connections=excluded.max_connections,
-               last_activity_at=excluded.last_activity_at, last_activity_epoch=excluded.last_activity_epoch,
-               last_route_kind=excluded.last_route_kind, last_stream_id=excluded.last_stream_id,
-               last_stream_name=excluded.last_stream_name, requests_5m=excluded.requests_5m,
-               bytes_5m=excluded.bytes_5m, health_status=excluded.health_status, updated_at=excluded.updated_at,
-               cdn_connections_now=excluded.cdn_connections_now, xui_connections_now=excluded.xui_connections_now,
-               divergence=excluded.divergence, count_source=excluded.count_source,
-               direct_sessions_now=excluded.direct_sessions_now'
+            'INSERT INTO proxy_user_runtime (' . implode(', ', $upsertColumns) . ')
+             VALUES (' . implode(',', $upsertValues) . ')
+             ON CONFLICT(username) DO UPDATE SET ' . implode(', ', $upsertUpdate)
         );
 
         $cdnCounts = CdnSession::activeCounts();
@@ -222,21 +301,35 @@ final class RestreamRuntime
             'SELECT COUNT(*) FROM cdn_sessions WHERE username = :u
                AND ' . CdnSession::activeWhereSql(time()) . ' AND direct_source = 1'
         );
+        $liveSession = $pdo->prepare(
+            'SELECT s.public_host,
+                    s.client_ip,
+                    s.user_agent,
+                    s.session_kind AS route_kind,
+                    s.stream_id,
+                    s.last_seen_at AS ts,
+                    s.last_seen_epoch,
+                    s.uptime_start_epoch,
+                    COALESCE(xs.stream_display_name, \'\') AS stream_name,
+                    COALESCE(lb.label, CASE WHEN s.lb_id > 0 THEN lb.public_ip ELSE \'main\' END, \'main\') AS lb_label
+               FROM cdn_sessions s
+          LEFT JOIN xui_streams_cache xs ON xs.stream_id = s.stream_id
+          LEFT JOIN lb_nodes lb ON lb.id = s.lb_id
+              WHERE s.username = :u
+                AND ' . CdnSession::activeWhereSql(time(), 's') . '
+                AND ' . CdnSession::publicClientWhereSql('s') . '
+              ORDER BY s.last_seen_epoch DESC
+              LIMIT 1'
+        );
 
         foreach ($rows as $r) {
             $username = (string) $r['username'];
             $last->execute([':u' => $username]);
             $l = $last->fetch() ?: [];
-            if ($l === []) {
-                $stLive = $pdo->prepare(
-                    'SELECT public_host, client_ip, user_agent, session_kind AS route_kind, stream_id, last_seen_at AS ts
-                       FROM cdn_sessions
-                      WHERE username = :u
-                        AND ' . CdnSession::activeWhereSql(time()) . '
-                      ORDER BY last_seen_epoch DESC LIMIT 1'
-                );
-                $stLive->execute([':u' => $username]);
-                $l = $stLive->fetch() ?: [];
+            $liveSession->execute([':u' => $username]);
+            $live = $liveSession->fetch() ?: [];
+            if ($l === [] && $live !== []) {
+                $l = $live;
             }
             $user = self::userByEvent(['username' => $username, 'credential_fingerprint' => '']);
             $userId = (int) ($user['user_id'] ?? 0);
@@ -258,37 +351,56 @@ final class RestreamRuntime
                 : ($cdnActive > $xuiActive ? 'cdn_local' : 'xui_activity_now');
             $divergence = $cdnActive - $xuiActive;
             $streamId = (int) ($l['stream_id'] ?? 0);
-            $streamName = '';
-            if ($streamId > 0) {
+            $streamName = (string) ($live['stream_name'] ?? '');
+            if ($streamName === '' && $streamId > 0) {
                 $st = $pdo->prepare('SELECT stream_display_name FROM xui_streams_cache WHERE stream_id = :s');
                 $st->execute([':s' => $streamId]);
                 $streamName = (string) ($st->fetchColumn() ?: '');
             }
+            $lastActivityEpoch = max((int) $r['last_epoch'], (int) ($live['last_seen_epoch'] ?? 0));
+            $lastActivityAt = (string) ($live['ts'] ?? ($l['ts'] ?? ''));
+            $lastHost = (string) ($live['public_host'] ?? ($l['public_host'] ?? ''));
+            $lastIp = (string) ($live['client_ip'] ?? ($l['client_ip'] ?? ''));
+            $lastPlayer = (string) ($live['user_agent'] ?? ($l['user_agent'] ?? ''));
+            $lastRouteKind = (string) ($live['route_kind'] ?? ($l['route_kind'] ?? ''));
+            $uptimeStartEpoch = (int) ($live['uptime_start_epoch'] ?? 0);
+            $lastLbLabel = (string) ($live['lb_label'] ?? 'main');
             $health = 'ok';
             if ($maxConn > 0 && $active > $maxConn) { $health = 'over_limit'; }
             if ($userId === 0) { $health = 'unknown_user'; }
             if ($health === 'ok' && $divergence !== 0 && $userId > 0) { $health = 'divergent'; }
             $incon = $pdo->prepare(
                 'SELECT COUNT(*) FROM proxy_request_events
-                  WHERE username = :u AND inconsistency <> "" AND ts_epoch >= :s AND status BETWEEN 200 AND 399'
+                  WHERE username = :u
+                    AND inconsistency <> \'\'
+                    AND ts_epoch >= :s
+                    AND status BETWEEN 200 AND 399
+                    AND ' . self::protectedHostSql('public_host')
             );
             $incon->execute([':u' => $username, ':s' => $since]);
             if ((int) $incon->fetchColumn() > 0) { $health = 'inconsistent'; }
 
-            $upsert->execute([
+            $params = [
                 ':u' => $username, ':uid' => $userId,
-                ':host' => (string) ($l['public_host'] ?? ''),
-                ':ip' => (string) ($l['client_ip'] ?? ''),
-                ':ua' => (string) ($l['user_agent'] ?? ''),
+                ':host' => $lastHost,
+                ':ip' => $lastIp,
+                ':ua' => $lastPlayer,
                 ':ac' => $active, ':mc' => $maxConn,
-                ':la' => (string) ($l['ts'] ?? ''), ':le' => (int) $r['last_epoch'],
-                ':rk' => (string) ($l['route_kind'] ?? ''),
+                ':la' => $lastActivityAt, ':le' => $lastActivityEpoch,
+                ':rk' => $lastRouteKind,
                 ':sid' => $streamId, ':sname' => $streamName,
                 ':rq' => (int) $r['reqs'], ':by' => (int) $r['bytes'],
                 ':hs' => $health, ':up' => date('c'),
                 ':cdn' => $cdnActive, ':xui' => $xuiActive, ':div' => $divergence,
                 ':src' => $source, ':ds' => $directNow,
-            ]);
+            ];
+            if ($hasRuntimeUptime) {
+                $params[':uptime'] = $uptimeStartEpoch;
+            }
+            if ($hasRuntimeLbLabel) {
+                $params[':lb'] = $lastLbLabel;
+            }
+            $upsert->execute($params);
             $stats['processed']++;
         }
         // Some quem sumiu da janela.
@@ -305,7 +417,9 @@ final class RestreamRuntime
         // 1) Swap de credencial — sempre crítico.
         $swapRows = $pdo->query(
             'SELECT username, COUNT(*) AS c FROM proxy_request_events
-              WHERE ts_epoch >= ' . $since . ' AND inconsistency = "invalid_credentials_swap"
+              WHERE ts_epoch >= ' . $since . '
+                AND inconsistency = \'invalid_credentials_swap\'
+                AND ' . self::protectedHostSql('public_host') . '
               GROUP BY username'
         )->fetchAll();
         $swaps = 0;
@@ -373,18 +487,21 @@ final class RestreamRuntime
         // 4) Matches fracos nos últimos 10 min.
         $weak = (int) $pdo->query(
             'SELECT COUNT(*) FROM proxy_request_events
-              WHERE ts_epoch >= ' . $since . ' AND match_confidence = "low" AND username <> ""'
+              WHERE ts_epoch >= ' . $since . '
+                AND match_confidence = \'low\'
+                AND username <> \'\'
+                AND ' . self::protectedHostSql('public_host') . ''
         )->fetchColumn();
 
         JobRunner::step('normalizar_direct_runtime');
         $normalized = Database::run(
             'UPDATE cdn_sessions
-                SET match_confidence = "medium",
-                    match_reason = "direct_source_runtime"
+                SET match_confidence = \'medium\',
+                    match_reason = \'direct_source_runtime\'
               WHERE ' . CdnSession::activeWhereSql(time()) . '
                 AND direct_source = 1
                 AND xui_activity_id = 0
-                AND match_reason IN ("", "orphan_request")',
+                AND match_reason IN (\'\', \'orphan_request\')',
             [],
             'restream.direct_runtime_match'
         );
@@ -413,15 +530,16 @@ final class RestreamRuntime
         ];
     }
 
-    /** Job: grava a série curta de KPIs usada para pico de 5min e 1h. */
-    public static function metricsRollup(array &$stats): void
+    /** Job leve: mantém o painel ao vivo longe de agregações pesadas. */
+    public static function metricsRollupLight(array &$stats): void
     {
         $pdo = Database::pdo();
         $now = time();
+        $preIndexHint = Database::isSqlite() ? ' INDEXED BY idx_pre_ts' : '';
         $active = (int) $pdo->query(
             'SELECT COUNT(*) FROM cdn_sessions WHERE ' . CdnSession::activeWhereSql($now) . '
                AND ' . CdnSession::publicClientWhereSql() . '
-               AND session_kind NOT IN ("playlist","api")'
+                AND session_kind NOT IN (\'playlist\',\'api\')'
         )->fetchColumn();
         $users = (int) $pdo->query(
             'SELECT COUNT(DISTINCT username) FROM cdn_sessions WHERE ' . CdnSession::activeWhereSql($now) . '
@@ -430,23 +548,44 @@ final class RestreamRuntime
         $fetch = (int) $pdo->query(
             'SELECT COUNT(*) FROM cdn_sessions WHERE ' . CdnSession::activeWhereSql($now) . '
                AND ' . CdnSession::publicClientWhereSql() . '
-               AND session_kind IN ("playlist","api")'
+                AND session_kind IN (\'playlist\',\'api\')'
         )->fetchColumn();
         $direct = DirectSource::activeSessions();
+        $requests5 = (int) $pdo->query(
+            'SELECT COUNT(*) FROM proxy_request_events' . $preIndexHint . '
+              WHERE ts_epoch >= ' . ($now - 300) . '
+                AND status BETWEEN 200 AND 399
+                AND ' . self::protectedHostSql('public_host')
+        )->fetchColumn();
+        $bytes5 = (int) $pdo->query(
+            'SELECT COALESCE(SUM(bytes),0) FROM proxy_request_events' . $preIndexHint . '
+              WHERE ts_epoch >= ' . ($now - 300) . '
+                AND status BETWEEN 200 AND 399
+                AND ' . self::protectedHostSql('public_host')
+        )->fetchColumn();
         $errors5 = (int) $pdo->query(
-            'SELECT COUNT(*) FROM proxy_request_events INDEXED BY idx_pre_ts WHERE ts_epoch >= ' . ($now - 300) . ' AND status >= 400'
+            'SELECT COUNT(*) FROM proxy_request_events' . $preIndexHint . '
+              WHERE ts_epoch >= ' . ($now - 300) . '
+                AND status >= 400
+                AND ' . self::protectedHostSql('public_host')
         )->fetchColumn();
         $swaps1h = (int) $pdo->query(
-            'SELECT COUNT(*) FROM proxy_request_events INDEXED BY idx_pre_ts WHERE ts_epoch >= ' . ($now - 3600) . ' AND inconsistency = "invalid_credentials_swap"'
+            'SELECT COUNT(*) FROM proxy_request_events' . $preIndexHint . '
+              WHERE ts_epoch >= ' . ($now - 3600) . '
+                AND inconsistency = \'invalid_credentials_swap\'
+                AND ' . self::protectedHostSql('public_host')
         )->fetchColumn();
-        $jobsLate = (int) $pdo->query(
-            'SELECT COUNT(*) FROM job_state WHERE next_run_epoch > 0 AND next_run_epoch < ' . ($now - 120) . ' AND running = 0'
+        $inconsistencies1h = (int) $pdo->query(
+            'SELECT COUNT(*) FROM proxy_request_events' . $preIndexHint . '
+              WHERE ts_epoch >= ' . ($now - 3600) . '
+                AND inconsistency <> \'\'
+                AND ' . self::protectedHostSql('public_host')
         )->fetchColumn();
+        $jobsLate = (int) $pdo->query(self::jobsLateCountSql($now))->fetchColumn();
         $directBlocked = (int) $pdo->query(
-            'SELECT COUNT(*) FROM direct_source_hops WHERE ts_epoch >= ' . ($now - 3600) . ' AND outcome <> "followed"'
+            'SELECT COUNT(*) FROM direct_source_hops WHERE ts_epoch >= ' . ($now - 3600) . ' AND outcome <> \'followed\''
         )->fetchColumn();
         $div = Divergence::counters();
-
         $ins = $pdo->prepare('INSERT INTO cdn_metrics (metric, value, ts_epoch) VALUES (:m,:v,:t)');
         // KPIs específicos de direct source: catálogo do XUI x consumo real.
         $dc = DirectCatalog::summary();
@@ -455,8 +594,11 @@ final class RestreamRuntime
             'users_active' => $users,
             'fetch_active' => $fetch,
             'direct_active' => $direct,
+            'requests_5m' => $requests5,
+            'bytes_5m' => $bytes5,
             'errors_5m' => $errors5,
             'swaps_1h' => $swaps1h,
+            'inconsistencies_1h' => $inconsistencies1h,
             'jobs_late' => $jobsLate,
             'direct_blocked_1h' => $directBlocked,
             'divergences_critical' => (int) ($div['critical'] ?? 0),
@@ -474,6 +616,56 @@ final class RestreamRuntime
         $pdo->exec('DELETE FROM cdn_metrics WHERE ts_epoch < ' . ($now - 86400));
         $stats['processed'] += count($metrics);
         $stats['details'] = $metrics;
+    }
+
+    /** Job analítico: snapshots pesados que nao podem pressionar o painel ao vivo. */
+    public static function metricsRollupAnalytics(array &$stats): void
+    {
+        $pdo = Database::pdo();
+        $now = time();
+        $preIndexHint = Database::isSqlite() ? ' INDEXED BY idx_pre_ts' : '';
+        $topHosts = $pdo->query(
+            'SELECT public_host AS k, COUNT(*) AS c FROM proxy_request_events' . $preIndexHint . '
+              WHERE ts_epoch >= ' . ($now - 300) . '
+                AND ' . self::protectedHostSql('public_host') . '
+              GROUP BY public_host
+              ORDER BY c DESC
+              LIMIT 5'
+        )->fetchAll();
+        $topPlayers = $pdo->query(
+            'SELECT user_agent AS k, COUNT(*) AS c FROM proxy_request_events' . $preIndexHint . '
+              WHERE ts_epoch >= ' . ($now - 300) . '
+                AND user_agent <> \'\'
+                AND ' . self::protectedHostSql('public_host') . '
+              GROUP BY user_agent
+              ORDER BY c DESC
+              LIMIT 5'
+        )->fetchAll();
+        $topKinds = $pdo->query(
+            'SELECT route_kind AS k, COUNT(*) AS c FROM proxy_request_events' . $preIndexHint . '
+              WHERE ts_epoch >= ' . ($now - 300) . '
+                AND ' . self::protectedHostSql('public_host') . '
+              GROUP BY route_kind
+              ORDER BY c DESC'
+        )->fetchAll();
+
+        SettingsRepository::set('summary_top_hosts_5m', $topHosts);
+        SettingsRepository::set('summary_top_players_5m', $topPlayers);
+        SettingsRepository::set('summary_top_kinds_5m', $topKinds);
+        SettingsRepository::set('summary_top_snapshot_epoch', $now);
+        $stats['processed'] += count($topHosts) + count($topPlayers) + count($topKinds);
+        $stats['details'] = [
+            'top_hosts' => count($topHosts),
+            'top_players' => count($topPlayers),
+            'top_kinds' => count($topKinds),
+            'snapshot_epoch' => $now,
+        ];
+    }
+
+    /** Alias legado para nao quebrar chamadas antigas. */
+    public static function metricsRollup(array &$stats): void
+    {
+        self::metricsRollupLight($stats);
     }
 
     /** Pico de uma métrica na janela informada. */
@@ -536,7 +728,7 @@ final class RestreamRuntime
                 'jobs' => array_values(array_filter(
                     $states,
                     static fn (array $j): bool => !empty($j['circuit_open'])
-                        || (int) ($j['late_seconds'] ?? 0) > 120
+                        || ((int) ($j['late_seconds'] ?? 0) > 120 && JobRunner::isFastJob((string) ($j['job_name'] ?? '')))
                         || (string) ($j['last_status'] ?? '') === 'error'
                 )),
                 'sessions_now' => self::latestMetric('connections_active'),
@@ -558,13 +750,19 @@ final class RestreamRuntime
     {
         $now = time();
         $pdo = Database::pdo();
+        $jobsLateNow = (int) $pdo->query(self::jobsLateCountSql($now))->fetchColumn();
+        $divOperational = Divergence::countersOperational();
+        $divAll = Divergence::counters();
         $metrics = self::latestMetrics([
             'connections_active',
             'users_active',
             'fetch_active',
             'direct_active',
+            'requests_5m',
+            'bytes_5m',
             'errors_5m',
             'swaps_1h',
+            'inconsistencies_1h',
             'jobs_late',
             'direct_blocked_1h',
             'divergences_critical',
@@ -581,18 +779,18 @@ final class RestreamRuntime
         $fetchNow = (int) ($metrics['fetch_active'] ?? 0);
         $directNow = (int) ($metrics['direct_active'] ?? 0);
 
-        if ($active === 0 && $usersActive === 0 && $fetchNow === 0) {
+        if (($active === 0 && $usersActive === 0 && $fetchNow === 0) && Database::isSqlite()) {
             $active = (int) $pdo->query(
                 'SELECT COUNT(*) FROM cdn_sessions
                   WHERE ' . CdnSession::activeWhereSql($now) . '
                     AND ' . CdnSession::publicClientWhereSql() . '
-                    AND session_kind NOT IN ("playlist","api")'
+                    AND session_kind NOT IN (\'playlist\',\'api\')'
             )->fetchColumn();
             $fetchNow = (int) $pdo->query(
                 'SELECT COUNT(*) FROM cdn_sessions
                   WHERE ' . CdnSession::activeWhereSql($now) . '
                     AND ' . CdnSession::publicClientWhereSql() . '
-                    AND session_kind IN ("playlist","api")'
+                    AND session_kind IN (\'playlist\',\'api\')'
             )->fetchColumn();
             $usersActive = (int) $pdo->query(
                 'SELECT COUNT(DISTINCT username) FROM cdn_sessions
@@ -605,7 +803,7 @@ final class RestreamRuntime
                   WHERE ' . CdnSession::activeWhereSql($now) . '
                     AND ' . CdnSession::publicClientWhereSql() . '
                     AND direct_source = 1
-                    AND session_kind NOT IN ("playlist","api")'
+                    AND session_kind NOT IN (\'playlist\',\'api\')'
             )->fetchColumn();
         }
 
@@ -643,13 +841,16 @@ final class RestreamRuntime
             'errors_5m' => (int) ($metrics['errors_5m'] ?? 0),
             'swaps_1h' => (int) ($metrics['swaps_1h'] ?? 0),
             'match' => $byConf,
-            'jobs_late' => (int) ($metrics['jobs_late'] ?? 0),
-            'divergences' => [
-                'critical' => (int) ($metrics['divergences_critical'] ?? 0),
-                'warn' => (int) ($metrics['divergences_warn'] ?? 0),
-                'info' => (int) ($metrics['divergences_info'] ?? 0),
+            'jobs_late' => $jobsLateNow,
+            // O painel ao vivo precisa refletir o que exige ação agora, não a
+            // massa informativa do catálogo de direct source.
+            'divergences' => $divOperational,
+            'divergences_operational' => $divOperational,
+            'divergences_catalog_noise' => [
+                'critical' => max(0, (int) ($divAll['critical'] ?? 0) - (int) ($divOperational['critical'] ?? 0)),
+                'warn' => max(0, (int) ($divAll['warn'] ?? 0) - (int) ($divOperational['warn'] ?? 0)),
+                'info' => max(0, (int) ($divAll['info'] ?? 0) - (int) ($divOperational['info'] ?? 0)),
             ],
-            'divergences_operational' => Divergence::countersOperational(),
             'limit_mode' => Divergence::mode(),
         ];
     }
@@ -665,24 +866,26 @@ final class RestreamRuntime
         $pdo->exec(
             'DELETE FROM proxy_request_events
               WHERE ts_epoch < ' . (time() - 21600) . '
-                AND match_confidence IN ("pending","low")
+                AND match_confidence IN (\'pending\',\'low\')
                 AND status >= 400'
         );
         JobRunner::step('podar_trilha');
         $stats['processed'] += AuditTimeline::prune($days);
         JobRunner::step('podar_tabelas_auxiliares');
         $pdo->exec('DELETE FROM rate_limit WHERE window_start < ' . (int) floor((time() - 3600) / 60));
-        $pdo->exec('DELETE FROM access_log WHERE ts < "' . date('c', time() - $days * 86400) . '"');
+        $pdo->exec('DELETE FROM access_log WHERE ts < \'' . date('c', time() - $days * 86400) . '\'');
         $pdo->exec('DELETE FROM job_runs WHERE started_epoch < ' . (time() - 3 * 86400));
         $pdo->exec('DELETE FROM job_step_history WHERE ts_epoch < ' . (time() - 3 * 86400));
         $pdo->exec('DELETE FROM lb_route_history WHERE ts_epoch < ' . (time() - 7 * 86400));
-        $pdo->exec('DELETE FROM audit_logs WHERE created_at < "' . date('c', time() - 30 * 86400) . '"');
-        $pdo->exec('DELETE FROM tokens WHERE expires_at < "' . date('c', time() - 86400) . '"');
-        $pdo->exec('DELETE FROM cdn_sessions WHERE status = "closed" AND ended_epoch < ' . (time() - 86400));
-        $pdo->exec('DELETE FROM cdn_divergences WHERE status = "closed" AND closed_epoch < ' . (time() - 7 * 86400));
+        $pdo->exec('DELETE FROM audit_logs WHERE created_at < \'' . date('c', time() - 30 * 86400) . '\'');
+        $pdo->exec('DELETE FROM tokens WHERE expires_at < \'' . date('c', time() - 86400) . '\'');
+        $pdo->exec('DELETE FROM cdn_sessions WHERE status = \'closed\' AND ended_epoch < ' . (time() - 86400));
+        $pdo->exec('DELETE FROM cdn_divergences WHERE status = \'closed\' AND closed_epoch < ' . (time() - 7 * 86400));
         // WAL grande deixa TODA leitura mais lenta; o cleanup é a hora certa.
         JobRunner::step('checkpoint_wal');
-        try { $pdo->exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch (Throwable $e) { /* best-effort */ }
+        if (Database::isSqlite()) {
+            try { $pdo->exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch (Throwable $e) { /* best-effort */ }
+        }
         $stats['details']['retention_days'] = $days;
     }
 
@@ -692,12 +895,18 @@ final class RestreamRuntime
         $pdo = Database::pdo();
         $since = time() - 1800;
         $pdo->exec(
-            'UPDATE proxy_request_events SET match_confidence = "pending"
-             WHERE ts_epoch >= ' . $since . ' AND match_confidence = "low" AND username <> ""
+            'UPDATE proxy_request_events SET match_confidence = \'pending\'
+             WHERE ts_epoch >= ' . $since . '
+               AND match_confidence = \'low\'
+               AND username <> ""
+               AND ' . self::protectedHostSql('public_host') . '
                AND request_id NOT IN (SELECT request_id FROM proxy_session_links)'
         );
         $stats['processed'] = (int) $pdo->query(
-            'SELECT COUNT(*) FROM proxy_request_events WHERE ts_epoch >= ' . $since . ' AND match_confidence = "pending"'
+            'SELECT COUNT(*) FROM proxy_request_events
+              WHERE ts_epoch >= ' . $since . '
+                AND match_confidence = \'pending\'
+                AND ' . self::protectedHostSql('public_host')
         )->fetchColumn();
         self::matchSessions($stats);
     }
@@ -707,7 +916,16 @@ final class RestreamRuntime
     public static function live(array $filters = [], int $limit = 200): array
     {
         $key = 'live_' . md5(json_encode([$filters, $limit], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        return Cache::remember($key, 2, static function () use ($filters, $limit): array {
+        return Cache::remember($key, 1, static function () use ($filters, $limit): array {
+            $lbLabelsSql = Database::isPgsql()
+                ? "STRING_AGG(DISTINCT CASE
+                            WHEN s.lb_id > 0 THEN COALESCE(lb.label, lb.public_ip, 'LB#' || s.lb_id::text)
+                            ELSE 'main'
+                        END, ',')"
+                : 'GROUP_CONCAT(DISTINCT CASE
+                            WHEN s.lb_id > 0 THEN COALESCE(lb.label, lb.public_ip, "LB#" || s.lb_id)
+                            ELSE "main"
+                        END)';
             $sql = 'SELECT
                         s.username,
                         COALESCE(u.user_id, r.user_id, 0) AS user_id,
@@ -718,23 +936,32 @@ final class RestreamRuntime
                         MAX(s.last_seen_at) AS last_activity_at,
                         MAX(s.last_route_kind) AS last_route_kind,
                         MAX(s.stream_id) AS last_stream_id,
-                        COALESCE(MAX(xs.stream_display_name), COALESCE(r.last_stream_name, "")) AS last_stream_name,
-                        SUM(CASE WHEN s.session_kind NOT IN ("playlist","api") THEN 1 ELSE 0 END) AS active_connections_now,
-                        SUM(CASE WHEN s.session_kind IN ("playlist","api") THEN 1 ELSE 0 END) AS playlist_fetch_now,
-                        SUM(CASE WHEN s.direct_source = 1 AND s.session_kind NOT IN ("playlist","api") THEN 1 ELSE 0 END) AS direct_sessions_now,
+                        COALESCE(MAX(xs.stream_display_name), COALESCE(r.last_stream_name, \'\')) AS last_stream_name,
+                        SUM(CASE WHEN s.session_kind NOT IN (\'playlist\',\'api\') THEN 1 ELSE 0 END) AS active_connections_now,
+                        SUM(CASE WHEN s.session_kind IN (\'playlist\',\'api\') THEN 1 ELSE 0 END) AS playlist_fetch_now,
+                        SUM(CASE WHEN s.direct_source = 1 AND s.session_kind NOT IN (\'playlist\',\'api\') THEN 1 ELSE 0 END) AS direct_sessions_now,
+                        MAX(s.lb_id) AS lb_id,
+                        ' . $lbLabelsSql . ' AS lb_labels,
+                        COALESCE(MAX(route.lb_id), 0) AS route_lb_id,
+                        COALESCE(MAX(route.mode), \'main_only\') AS route_mode,
+                        COALESCE(MAX(route_lb.label), CASE WHEN COALESCE(MAX(route.lb_id), 0) > 0 THEN MAX(route_lb.public_ip) ELSE \'main\' END, \'main\') AS route_lb_label,
                         COALESCE(MAX(u.max_connections), COALESCE(r.max_connections, 0)) AS max_connections,
                         COALESCE(MAX(r.xui_connections_now), 0) AS xui_connections_now,
                         COALESCE(MAX(r.requests_5m), 0) AS requests_5m,
                         COALESCE(MAX(r.bytes_5m), 0) AS bytes_5m,
-                        COALESCE(MAX(r.count_source), "cdn_local") AS count_source,
-                        COALESCE(MAX(r.health_status), "ok") AS health_status
+                        COALESCE(MAX(r.count_source), \'cdn_local\') AS count_source,
+                        COALESCE(MAX(r.health_status), \'ok\') AS health_status
                     FROM cdn_sessions s
                     LEFT JOIN proxy_user_runtime r ON r.username = s.username
                     LEFT JOIN xui_users_cache u ON u.username = s.username
                     LEFT JOIN xui_streams_cache xs ON xs.stream_id = s.stream_id
+                    LEFT JOIN lb_nodes lb ON lb.id = s.lb_id
+                    LEFT JOIN lb_user_routes route ON route.username = s.username
+                    LEFT JOIN lb_nodes route_lb ON route_lb.id = route.lb_id
                     WHERE ' . CdnSession::activeWhereSql(time(), 's') . '
                       AND ' . CdnSession::publicClientWhereSql('s') . '
-                      AND s.username <> ""';
+                      AND s.username <> \'\'
+                      AND ' . self::protectedHostSql('s.public_host');
             $params = [];
             if (!empty($filters['username'])) { $sql .= ' AND s.username LIKE :u'; $params[':u'] = '%' . $filters['username'] . '%'; }
             if (!empty($filters['host'])) { $sql .= ' AND s.public_host LIKE :h'; $params[':h'] = '%' . $filters['host'] . '%'; }
@@ -765,7 +992,7 @@ final class RestreamRuntime
 
     public static function summary(): array
     {
-        return Cache::remember('summary', 5, static fn(): array => self::summaryFresh());
+        return Cache::remember('summary', 2, static fn(): array => self::summaryFresh());
     }
 
     public static function summaryFresh(): array
@@ -774,32 +1001,38 @@ final class RestreamRuntime
         $win = time() - self::ACTIVE_WINDOW;
         $cfg = XuiSyncConfig::get();
         $kpis = self::kpis();
+        $summaryTopHosts = SettingsRepository::get('summary_top_hosts_5m', []);
+        $summaryTopPlayers = SettingsRepository::get('summary_top_players_5m', []);
+        $summaryTopKinds = SettingsRepository::get('summary_top_kinds_5m', []);
+        $summaryMetrics = self::latestMetrics([
+            'requests_5m',
+            'bytes_5m',
+            'errors_5m',
+            'inconsistencies_1h',
+        ]);
         return [
             'generated_at' => date('c'),
             'active_users' => max(
                 $kpis['users_now'],
-                (int) $pdo->query('SELECT COUNT(*) FROM proxy_user_runtime WHERE last_activity_epoch >= ' . $win . ' AND active_connections_now > 0')->fetchColumn()
+                (int) ($pdo->query('SELECT COUNT(*) FROM proxy_user_runtime WHERE last_activity_epoch >= ' . $win . ' AND active_connections_now > 0')->fetchColumn() ?: 0)
             ),
             'active_sessions_xui' => (int) $pdo->query('SELECT COUNT(*) FROM xui_activity_now_cache')->fetchColumn(),
             'active_sessions_cdn' => $kpis['connections_now'],
             'kpis' => $kpis,
             'divergences' => Divergence::countersRecent(300),
-            'requests_5m' => (int) $pdo->query('SELECT COUNT(*) FROM proxy_request_events WHERE ts_epoch >= ' . (time() - 300) . ' AND status BETWEEN 200 AND 399')->fetchColumn(),
-            'bytes_5m' => (int) $pdo->query('SELECT COALESCE(SUM(bytes),0) FROM proxy_request_events WHERE ts_epoch >= ' . (time() - 300) . ' AND status BETWEEN 200 AND 399')->fetchColumn(),
-            'errors_5m' => (int) $pdo->query('SELECT COUNT(*) FROM proxy_request_events WHERE ts_epoch >= ' . (time() - 300) . ' AND status >= 400')->fetchColumn(),
+            'requests_5m' => (int) ($summaryMetrics['requests_5m'] ?? 0),
+            'bytes_5m' => (int) ($summaryMetrics['bytes_5m'] ?? 0),
+            'errors_5m' => (int) ($summaryMetrics['errors_5m'] ?? 0),
             'over_limit' => (int) $pdo->query('SELECT COUNT(*) FROM proxy_user_runtime WHERE max_connections > 0 AND active_connections_now > max_connections')->fetchColumn(),
-            // INDEXED BY: sem a dica o SQLite escolhia idx_pre_host/idx_pre_kind e
-            // varria a tabela inteira de eventos (160ms+ por agregação). Com a
-            // janela de tempo pelo idx_pre_ts cai para ~10ms.
-            'inconsistencies_1h' => (int) $pdo->query('SELECT COUNT(*) FROM proxy_request_events INDEXED BY idx_pre_ts WHERE ts_epoch >= ' . (time() - 3600) . ' AND inconsistency <> ""')->fetchColumn(),
+            'inconsistencies_1h' => (int) ($summaryMetrics['inconsistencies_1h'] ?? 0),
             'sync_status' => (string) ($cfg['last_sync_status'] ?? 'never'),
             'sync_at' => (string) ($cfg['last_sync_at'] ?? ''),
             'sync_error' => (string) ($cfg['last_sync_error'] ?? ''),
             'sync_enabled' => (int) ($cfg['sync_enabled'] ?? 0) === 1,
             'mysql_driver' => XuiReadOnly::available(),
-            'top_hosts' => $pdo->query('SELECT public_host AS k, COUNT(*) AS c FROM proxy_request_events INDEXED BY idx_pre_ts WHERE ts_epoch >= ' . (time() - 300) . ' GROUP BY public_host ORDER BY c DESC LIMIT 5')->fetchAll(),
-            'top_players' => $pdo->query('SELECT user_agent AS k, COUNT(*) AS c FROM proxy_request_events INDEXED BY idx_pre_ts WHERE ts_epoch >= ' . (time() - 300) . ' AND user_agent <> "" GROUP BY user_agent ORDER BY c DESC LIMIT 5')->fetchAll(),
-            'top_kinds' => $pdo->query('SELECT route_kind AS k, COUNT(*) AS c FROM proxy_request_events INDEXED BY idx_pre_ts WHERE ts_epoch >= ' . (time() - 300) . ' GROUP BY route_kind ORDER BY c DESC')->fetchAll(),
+            'top_hosts' => is_array($summaryTopHosts) ? $summaryTopHosts : [],
+            'top_players' => is_array($summaryTopPlayers) ? $summaryTopPlayers : [],
+            'top_kinds' => is_array($summaryTopKinds) ? $summaryTopKinds : [],
             'top_users' => $pdo->query(
                 'SELECT username AS k, active_connections_now AS c
                    FROM proxy_user_runtime
@@ -832,17 +1065,20 @@ final class RestreamRuntime
         }
 
         $events = $pdo->prepare(
-            'SELECT * FROM proxy_request_events WHERE username = :u ORDER BY id DESC LIMIT 100'
+            'SELECT * FROM proxy_request_events
+              WHERE username = :u
+                AND ' . self::protectedHostSql('public_host') . '
+              ORDER BY id DESC LIMIT 100'
         );
         $events->execute([':u' => $username]);
 
-        $hosts = $pdo->prepare('SELECT public_host AS k, COUNT(*) AS c, MAX(ts) AS last FROM proxy_request_events WHERE username = :u GROUP BY public_host ORDER BY c DESC LIMIT 20');
+        $hosts = $pdo->prepare('SELECT public_host AS k, COUNT(*) AS c, MAX(ts) AS last FROM proxy_request_events WHERE username = :u AND ' . self::protectedHostSql('public_host') . ' GROUP BY public_host ORDER BY c DESC LIMIT 20');
         $hosts->execute([':u' => $username]);
-        $ips = $pdo->prepare('SELECT client_ip AS k, COUNT(*) AS c, MAX(ts) AS last FROM proxy_request_events WHERE username = :u GROUP BY client_ip ORDER BY c DESC LIMIT 20');
+        $ips = $pdo->prepare('SELECT client_ip AS k, COUNT(*) AS c, MAX(ts) AS last FROM proxy_request_events WHERE username = :u AND ' . self::protectedHostSql('public_host') . ' GROUP BY client_ip ORDER BY c DESC LIMIT 20');
         $ips->execute([':u' => $username]);
-        $players = $pdo->prepare('SELECT user_agent AS k, COUNT(*) AS c, MAX(ts) AS last FROM proxy_request_events WHERE username = :u GROUP BY user_agent ORDER BY c DESC LIMIT 20');
+        $players = $pdo->prepare('SELECT user_agent AS k, COUNT(*) AS c, MAX(ts) AS last FROM proxy_request_events WHERE username = :u AND ' . self::protectedHostSql('public_host') . ' GROUP BY user_agent ORDER BY c DESC LIMIT 20');
         $players->execute([':u' => $username]);
-        $divs = $pdo->prepare('SELECT * FROM proxy_request_events WHERE username = :u AND inconsistency <> "" ORDER BY id DESC LIMIT 50');
+        $divs = $pdo->prepare('SELECT * FROM proxy_request_events WHERE username = :u AND inconsistency <> "" AND ' . self::protectedHostSql('public_host') . ' ORDER BY id DESC LIMIT 50');
         $divs->execute([':u' => $username]);
 
         return [
@@ -863,7 +1099,7 @@ final class RestreamRuntime
 
     public static function events(array $filters = [], int $limit = 200): array
     {
-        $sql = 'SELECT * FROM proxy_request_events WHERE 1=1';
+        $sql = 'SELECT * FROM proxy_request_events WHERE ' . self::protectedHostSql('public_host');
         $params = [];
         foreach ([['username', 'username'], ['ip', 'client_ip'], ['host', 'public_host'], ['player', 'user_agent']] as [$f, $col]) {
             if (!empty($filters[$f])) { $sql .= " AND $col LIKE :$f"; $params[":$f"] = '%' . $filters[$f] . '%'; }
@@ -886,6 +1122,7 @@ final class RestreamRuntime
             "SELECT $column AS k, COUNT(*) AS requests, COALESCE(SUM(bytes),0) AS bytes,
                     COUNT(DISTINCT username) AS users, MAX(ts) AS last_seen
              FROM proxy_request_events WHERE ts_epoch >= $since AND $column <> ''
+               AND " . self::protectedHostSql('public_host') . "
              GROUP BY $column ORDER BY requests DESC LIMIT " . max(1, min(500, $limit))
         )->fetchAll();
     }

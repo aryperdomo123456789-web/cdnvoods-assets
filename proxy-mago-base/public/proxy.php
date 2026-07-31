@@ -124,8 +124,8 @@ $tokenId = $decision['token'] ? (int) $decision['token']['id'] : null;
 // nenhuma consulta pesada no caminho do stream: só rota textual resolve,
 // segmento reaproveita a rota já gravada na sessão.
 // ---------------------------------------------------------------------------
-$lbDecision = ['target' => 'main', 'lb_id' => 0, 'reason' => 'main_only'];
-if ($isTextual && $REQ->username !== '') {
+$lbDecision = ['target' => 'main', 'lb_id' => 0, 'reason' => 'main_only', 'host' => '', 'mode' => 'main_only'];
+if ((string) Config::get('role', 'main') !== 'lb' && $REQ->username !== '') {
     try {
         $lbDecision = LbRouter::decide($REQ->username, 'proxy');
     } catch (Throwable $e) {
@@ -140,11 +140,42 @@ if ($SESSION_KEY !== '' && (int) $lbDecision['lb_id'] > 0) {
     CdnSession::tagLb($SESSION_KEY, (int) $lbDecision['lb_id']);
 }
 
+if ((string) Config::get('role', 'main') !== 'lb'
+    && (string) ($lbDecision['target'] ?? 'main') === 'lb'
+    && (string) ($lbDecision['host'] ?? '') !== '') {
+    $origin = [
+        'id' => -((int) $lbDecision['lb_id']),
+        'host' => (string) $lbDecision['host'],
+        'port' => 80,
+        'scheme' => 'http',
+        'base_path' => '',
+        'auth_user' => '',
+        'auth_pass' => '',
+        'name' => 'LB-' . (int) $lbDecision['lb_id'],
+        'type' => 'a',
+        'host_header' => '',
+        'extra_hosts' => '',
+    ];
+}
+
 // Enforcement de limite (só age em modo "block", após a tolerância de reconexão).
-if ($REQ->username !== '' && Divergence::shouldBlock($REQ->username)) {
+if ($REQ->username !== '' && Divergence::shouldBlock($REQ->username, CdnSession::kindOf($REQ))) {
+    CdnSession::reject($SESSION_KEY, 'above_limit_blocked');
     Audit::log('restream_blocked_over_limit',
         sprintf('request_id=%s user=%s host=%s', $REQ->requestId, $REQ->username, $host), $clientIp, $userAgent);
     proxy_fail(429, $host, $path, 'above_limit_blocked');
+    return;
+}
+
+if ($REQ->username !== '' && !UserIpLock::matches($REQ->username, $clientIp)) {
+    CdnSession::reject($SESSION_KEY, 'cdn_ip_lock_blocked');
+    Audit::log(
+        'cdn_ip_lock_blocked',
+        sprintf('request_id=%s user=%s client_ip=%s host=%s', $REQ->requestId, $REQ->username, $clientIp, $host),
+        $clientIp,
+        $userAgent
+    );
+    proxy_fail(403, $host, $path, 'cdn_ip_lock_blocked');
     return;
 }
 
@@ -183,7 +214,10 @@ try {
             return;
         }
 
-        $ctx = PlaylistRewriter::compile($origin, $host, $token, $publicScheme);
+        $rewriteHost = ((string) ($lbDecision['target'] ?? 'main') === 'lb' && (string) ($lbDecision['host'] ?? '') !== '')
+            ? (string) $lbDecision['host']
+            : $host;
+        $ctx = PlaylistRewriter::compile($origin, $rewriteHost, $token, $publicScheme);
         // Anti-embaralhamento: a resposta reescrita só pode conter o username
         // que entrou. Qualquer divergência aborta a entrega.
         if ($REQ->username !== '' && (int) SettingsRepository::get('credential_guard_enabled', 1) === 1) {

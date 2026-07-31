@@ -70,6 +70,7 @@ $qs = http_build_query(array_filter($filters, static fn ($v) => $v !== '' && $v 
     <nav>
         <a href="/restream.php">Ao vivo</a>
         <a href="/auditoria.php">Auditoria</a>
+        <a href="/xui.php">XUI</a>
         <a href="/jobs.php">Jobs</a>
         <a href="/dashboard.php">Domínios</a>
         <a href="/lb.php">LB</a>

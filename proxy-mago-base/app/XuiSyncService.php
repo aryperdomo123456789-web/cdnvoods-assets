@@ -96,7 +96,9 @@ final class XuiSyncService
                FROM streams'
         );
         $pdo = Database::pdo();
-        $pdo->beginTransaction();
+        $batchSize = 2000;
+        $inTx = false;
+        $batchCount = 0;
         try {
             $stmt = $pdo->prepare(
                 'INSERT INTO xui_streams_cache
@@ -114,6 +116,10 @@ final class XuiSyncService
             );
             $now = date('c');
             foreach ($rows as $r) {
+                if (!$inTx) {
+                    $pdo->beginTransaction();
+                    $inTx = true;
+                }
                 $stmt->execute([
                     ':id' => (int) $r['id'],
                     ':t' => (string) ($r['type'] ?? ''),
@@ -127,13 +133,23 @@ final class XuiSyncService
                     ':sy' => $now,
                 ]);
                 $stats['processed']++;
+                $batchCount++;
+                if (($batchCount % $batchSize) === 0) {
+                    $pdo->commit();
+                    $inTx = false;
+                }
             }
-            $pdo->commit();
+            if ($inTx) {
+                $pdo->commit();
+            }
         } catch (Throwable $e) {
-            $pdo->rollBack();
+            if ($inTx && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             throw $e;
         }
         $stats['details']['streams'] = $stats['processed'];
+        $stats['details']['stream_batches'] = (int) ceil(max(1, $stats['processed']) / $batchSize);
         $stats['details']['direct_db'] = (int) $pdo->query(
             'SELECT COUNT(*) FROM xui_streams_cache WHERE direct_source = 1'
         )->fetchColumn();

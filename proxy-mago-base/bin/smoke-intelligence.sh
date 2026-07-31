@@ -36,7 +36,7 @@ for i in $(seq 1 10); do
     "http://$HOST/live/$USER/$PASS/1.m3u8" &
 done
 wait
-"$PHP" "$BASE/bin/jobs-run.php" --job=consolidate_runtime >/dev/null 2>&1
+timeout 20s "$PHP" "$BASE/bin/jobs-run.php" --job=consolidate_runtime >/dev/null 2>&1
 CONN=$(q "SELECT COUNT(*) FROM cdn_sessions WHERE username='$USER' AND state='active' AND session_kind IN ('hls','live')")
 [ "${CONN:-0}" -le 2 ] && pass "burst agrupado em $CONN sessão(ões)" || bad "burst inflou para $CONN sessões"
 
@@ -58,7 +58,7 @@ else
 fi
 
 say "4b. direct source cadastrado no DB do XUI (streams.direct_source = 1)"
-"$PHP" "$BASE/bin/jobs-run.php" --job=direct_enrich --force >/dev/null 2>&1
+timeout 30s "$PHP" "$BASE/bin/jobs-run.php" --job=direct_enrich --force >/dev/null 2>&1
 DBDIRECT=$(q "SELECT COUNT(*) FROM xui_streams_cache WHERE direct_source = 1")
 PARSED=$(q "SELECT COUNT(*) FROM xui_streams_cache WHERE direct_source = 1 AND parse_status = 'ok'")
 BADPARSE=$(q "SELECT COUNT(*) FROM xui_streams_cache WHERE direct_source = 1 AND parse_status IN ('bad_json','unsupported','no_host')")
@@ -72,7 +72,7 @@ else
 fi
 
 say "4c. consolidação DB + runtime (host efetivo)"
-"$PHP" "$BASE/bin/jobs-run.php" --job=direct_consolidate --force >/dev/null 2>&1
+timeout 40s "$PHP" "$BASE/bin/jobs-run.php" --job=direct_consolidate --force >/dev/null 2>&1
 STATES=$(q "SELECT COUNT(*) FROM direct_stream_state")
 MISMATCH=$(q "SELECT COUNT(*) FROM direct_stream_state WHERE direct_consistency='mismatch'")
 DBONLY=$(q "SELECT COUNT(*) FROM direct_stream_state WHERE direct_origin_mode='db_only'")
@@ -104,7 +104,7 @@ else
 fi
 
 say "6. divergências e jobs"
-"$PHP" "$BASE/bin/jobs-run.php" --job=detect_inconsistency >/dev/null 2>&1
+timeout 20s "$PHP" "$BASE/bin/jobs-run.php" --job=detect_inconsistency >/dev/null 2>&1
 DIV=$(q "SELECT COUNT(*) FROM cdn_divergences WHERE status='open'")
 DIRDIV=$(q "SELECT COUNT(*) FROM cdn_divergences WHERE status='open' AND kind LIKE 'direct_%'")
 printf '  divergências de direct source abertas=%s\n' "${DIRDIV:-0}"
