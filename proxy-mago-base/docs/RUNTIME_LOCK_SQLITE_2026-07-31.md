@@ -66,6 +66,11 @@ descartados, e qualquer lock residual registra o nome do job e os fluxos ativos.
 Isso reduz colisões entre jobs, mas não serializa clientes HTTP e não altera o
 requisito de PostgreSQL/Redis para a trilha quente em escala profissional.
 
+O `smoke-runtime-live` também força temporariamente `cdn_sessions_enabled=1` e
+restaura o valor anterior (inclusive chave ausente). Assim, a prova de sessão
+ativa não depende de um toggle global que um operador tenha deixado desligado
+no painel e não produz falso positivo na checagem da sessão fantasma.
+
 Se o lock voltar a aparecer mesmo isolado, o log agora diz, por exemplo:
 
 ```text
