@@ -31,10 +31,10 @@ Regras: single XUI manda; documento `2026-07-31` vence documento antigo; execuç
 - Segredos: senha SSH via `SSHPASS` (nunca em linha de comando), `LbCrypto` AES-256-GCM, redaction em todo log.
 
 ### Parcial
-- Contagem `direct source` em troca de filme: `CdnSession::touch()` cria chave por `stream_id`, e **não existe supersede** da sessão anterior do mesmo dispositivo em `movie`/`series`. Resultado: durante a janela de idle direct (até 7200s) a contagem pode inflar. Documento antigo diz "corrigido" — no código de hoje não está.
+- (RESOLVIDO 2026-07-31) Contagem `direct source` em troca de filme: `CdnSession::supersedePrevious()` fecha a sessão anterior de `movie`/`series` do mesmo `username|fingerprint + IP + app` como `close_reason='superseded'`. Provado por `bin/smoke-lb.sh` (etapa 4): contador fica em 1 na troca de filme. Live continua contando por tela, de propósito.
 - Frescor do painel: `restream-data.php` tem `_meta` (idade, query_ms, lock retries); `lb-data.php` só tem `ts`, sem `data_age_ms` nem aviso de modo degradado.
 - `xui_sync_streams`: volume real (483k+ streams) exige confirmação de estabilidade sob cron no ambiente real.
-- Smoke: existe `smoke-test.sh`, `smoke-restream.sh`, `smoke-intelligence.sh`. Não existe smoke de LB (troca de LB, queda de LB, fallback pro cérebro).
+- (RESOLVIDO 2026-07-31) Smoke de LB: `bin/smoke-lb.sh` cobre score dos nós, decisão de rota, queda de LB com fallback para o cérebro e supersede de VOD.
 
 ### Crítico / não iniciado
 - Runtime quente ainda 100% em SQLite (sessão, requests, auditoria, jobs). Sprint 2 define PostgreSQL como destino oficial; hoje não há camada de abstração — `Database.php` é o único ponto com menção a Postgres.
@@ -42,9 +42,20 @@ Regras: single XUI manda; documento `2026-07-31` vence documento antigo; execuç
 
 ## 3. Próxima ação técnica segura (ordem)
 
-1. `S1-P0` — supersede de sessão em `movie`/`series`: ao abrir novo `stream_id` para o mesmo `username + client_ip + app`, fechar a sessão anterior com `close_reason='superseded'`. Escopo cirúrgico em `app/CdnSession.php`, validado por `bin/smoke-intelligence.sh` + teste real de troca de filme.
-2. `S1-P1` — `bin/smoke-lb.sh`: prova de troca de LB, queda de LB e fallback para o cérebro.
+1. ~~`S1-P0` — supersede de sessão em `movie`/`series`~~ FEITO em `app/CdnSession.php`.
+2. ~~`S1-P1` — `bin/smoke-lb.sh`~~ FEITO (5 ok / 0 falhas neste ambiente, sem LB cadastrado).
 3. `S1-P2` — `_meta` com `data_age_ms` + aviso de modo degradado em `lb-data.php` e nos cards do painel.
 4. `S2-P0-4` — abstração de persistência (config / runtime quente / auditoria / espelho XUI) antes de qualquer migração para PostgreSQL.
 
 Nada de migrar banco antes de fechar 1 e 2: contagem errada em banco novo continua contagem errada.
+
+
+## 4. Plano de escala oficial
+
+Visão: `docs/PLANO_ESCALA_SUPREMA_MAIN_LB_2026-07-31.md`
+Execução em fases (é este que se segue no dia a dia): `docs/PLANO_EXECUCAO_ESCALA_FASES_2026-07-31.md`
+
+Fase 1 (agora): 1.1 supersede FEITO, 1.2 smoke de LB FEITO, restam 1.3 frescor
+de dados, 1.4 polling adaptativo, 1.5 jobs fora do caminho quente, 1.6 pacote
+padrão para `LB-02`, 1.7 baseline de carga. Redis (Fase 2), PostgreSQL (Fase 3)
+e motor Go (Fase 4) só depois da Fase 1 fechada.
