@@ -27,7 +27,7 @@ out=$(run <<'PHP'
 $nodes = LbNode::all();
 echo count($nodes), "\n";
 foreach ($nodes as $n) {
-    printf("node=%d status=%s score=%.2f\n", (int)$n['id'], (string)$n['status'], LbRouter::score($n));
+    printf("node=%d status=%s score=%.2f\n", (int)$n['id'], (string)($n['health_status'] ?? '-'), LbRouter::score($n));
 }
 PHP
 )
@@ -49,12 +49,12 @@ out=$(run <<PHP
 foreach (\$nodes as \$n) { if ((int)\$n['id'] > 0) { \$node = \$n; break; } }
 if (!\$node) { echo "SKIP sem LB cadastrado\n"; exit; }
 \$id = (int) \$node['id'];
-\$prev = (string) \$node['status'];
+\$prev = (string) (\$node['health_status'] ?? 'unknown');
 LbRouter::assign('$USERNAME', 'forced', \$id, 'smoke_forced');
-LbNode::update(\$id, ['status' => 'offline']);
+LbNode::update(\$id, ['health_status' => 'down']);
 \$d = LbRouter::decide('$USERNAME', 'smoke_offline');
 echo 'offline_decide_lb=', (int)(\$d['lb_id'] ?? 0), ' mode=', \$d['mode'] ?? '-', "\n";
-LbNode::update(\$id, ['status' => \$prev]);
+LbNode::update(\$id, ['health_status' => \$prev]);
 \$d2 = LbRouter::decide('$USERNAME', 'smoke_online');
 echo 'online_decide_lb=', (int)(\$d2['lb_id'] ?? 0), "\n";
 LbRouter::remove('$USERNAME');
