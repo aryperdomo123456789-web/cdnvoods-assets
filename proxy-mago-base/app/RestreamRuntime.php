@@ -1096,12 +1096,23 @@ final class RestreamRuntime
             'errors_5m',
             'inconsistencies_1h',
         ]);
+        // Resumo depende do rollup leve; recontagem só em modo degradado.
+        $heavy = self::metricsIfFresh(['users_runtime_active', 'over_limit_now']);
+        if ($heavy === null) {
+            $heavy = [
+                'users_runtime_active' => (int) ($pdo->query(
+                    'SELECT COUNT(*) FROM proxy_user_runtime
+                      WHERE last_activity_epoch >= ' . $win . ' AND active_connections_now > 0'
+                )->fetchColumn() ?: 0),
+                'over_limit_now' => (int) ($pdo->query(
+                    'SELECT COUNT(*) FROM proxy_user_runtime
+                      WHERE max_connections > 0 AND active_connections_now > max_connections'
+                )->fetchColumn() ?: 0),
+            ];
+        }
         return [
             'generated_at' => date('c'),
-            'active_users' => max(
-                $kpis['users_now'],
-                (int) ($pdo->query('SELECT COUNT(*) FROM proxy_user_runtime WHERE last_activity_epoch >= ' . $win . ' AND active_connections_now > 0')->fetchColumn() ?: 0)
-            ),
+            'active_users' => max((int) $kpis['users_now'], (int) $heavy['users_runtime_active']),
             'active_sessions_xui' => (int) $pdo->query('SELECT COUNT(*) FROM xui_activity_now_cache')->fetchColumn(),
             'active_sessions_cdn' => $kpis['connections_now'],
             'kpis' => $kpis,
@@ -1109,7 +1120,7 @@ final class RestreamRuntime
             'requests_5m' => (int) ($summaryMetrics['requests_5m'] ?? 0),
             'bytes_5m' => (int) ($summaryMetrics['bytes_5m'] ?? 0),
             'errors_5m' => (int) ($summaryMetrics['errors_5m'] ?? 0),
-            'over_limit' => (int) $pdo->query('SELECT COUNT(*) FROM proxy_user_runtime WHERE max_connections > 0 AND active_connections_now > max_connections')->fetchColumn(),
+            'over_limit' => (int) $heavy['over_limit_now'],
             'inconsistencies_1h' => (int) ($summaryMetrics['inconsistencies_1h'] ?? 0),
             'sync_status' => (string) ($cfg['last_sync_status'] ?? 'never'),
             'sync_at' => (string) ($cfg['last_sync_at'] ?? ''),
