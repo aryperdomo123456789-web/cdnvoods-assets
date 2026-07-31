@@ -111,4 +111,5 @@ check('max_connections=0 => sem bloqueio', !Divergence::shouldBlock($user, 'live
 
 $cleanup();
 printf("\nresultado: %d ok / %d falhas\n", $ok, $fail);
+$restoreSessions();
 exit($fail === 0 ? 0 : 1);
