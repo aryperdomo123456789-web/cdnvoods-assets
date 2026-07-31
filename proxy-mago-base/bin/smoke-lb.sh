@@ -49,12 +49,12 @@ out=$(run <<PHP
 foreach (\$nodes as \$n) { if ((int)\$n['id'] > 0) { \$node = \$n; break; } }
 if (!\$node) { echo "SKIP sem LB cadastrado\n"; exit; }
 \$id = (int) \$node['id'];
-\$prev = (string) (\$node['health_status'] ?? 'unknown');
+\$prevEnabled = (int) (\$node['enabled'] ?? 1);
 LbRouter::assign('$USERNAME', 'forced', \$id, 'smoke_forced');
-LbNode::update(\$id, ['health_status' => 'down']);
+LbNode::setEnabled(\$id, false); // musculo caiu
 \$d = LbRouter::decide('$USERNAME', 'smoke_offline');
 echo 'offline_decide_lb=', (int)(\$d['lb_id'] ?? 0), ' mode=', \$d['mode'] ?? '-', "\n";
-LbNode::update(\$id, ['health_status' => \$prev]);
+LbNode::setEnabled(\$id, \$prevEnabled === 1);
 \$d2 = LbRouter::decide('$USERNAME', 'smoke_online');
 echo 'online_decide_lb=', (int)(\$d2['lb_id'] ?? 0), "\n";
 LbRouter::remove('$USERNAME');
