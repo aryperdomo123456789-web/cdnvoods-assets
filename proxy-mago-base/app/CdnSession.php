@@ -241,7 +241,58 @@ final class CdnSession
                 ':dle' => $directFlag ? $now : 0,
             ]);
         }, 'cdnsession.touch');
+        if ($ok) {
+            self::supersedePrevious($ctx, $key, $kind, $streamId, $now);
+        }
         return $ok ? $key : '';
+    }
+
+    /**
+     * Troca de filme/série NÃO é conexão nova.
+     *
+     * Quando o mesmo usuário, no mesmo IP e no mesmo app, abre outro VOD, a
+     * sessão anterior de VOD tem que morrer na hora como `superseded`. Sem
+     * isso o contador da CDN inflava (cada filme zapeado virava +1 conexão
+     * viva por até 2h por causa do DIRECT_IDLE) e envenenava o limite do XUI.
+     *
+     * Live fica de fora de propósito: duas telas ao vivo são duas conexões
+     * reais e devem continuar contando.
+     */
+    private static function supersedePrevious(
+        RequestContext $ctx,
+        string $key,
+        string $kind,
+        int $streamId,
+        int $now
+    ): void {
+        if (!in_array($kind, ['movie', 'series'], true) || $streamId <= 0) {
+            return;
+        }
+        $identity = $ctx->username !== '' ? $ctx->username : '';
+        Database::write(static function (PDO $pdo) use ($identity, $ctx, $key, $now): void {
+            $pdo->prepare(
+                'UPDATE cdn_sessions
+                    SET status = \'closed\',
+                        close_reason = \'superseded\',
+                        ended_epoch = :now,
+                        active_requests = 0
+                  WHERE status = \'active\'
+                    AND session_key <> :k
+                    AND session_kind IN (\'movie\',\'series\')
+                    AND client_ip = :ip
+                    AND user_agent = :ua
+                    AND ((:u <> \'\' AND username = :u2) OR (:u3 = \'\' AND credential_fingerprint = :f))'
+            )->execute([
+                ':now' => $now,
+                ':k' => $key,
+                ':ip' => $ctx->clientIp,
+                ':ua' => substr($ctx->userAgent, 0, 200),
+                ':u' => $identity,
+                ':u2' => $identity,
+                ':u3' => $identity,
+                ':f' => $ctx->fingerprint,
+            ]);
+        }, 'cdnsession.supersede', 2);
     }
 
     /** Fecha o ciclo do request dentro da sessão (bytes, erro, direct source). */
