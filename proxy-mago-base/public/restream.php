@@ -60,6 +60,7 @@ session_write_close();
                 <p>Somente o que importa: usuários do XUI, conexões em uso, direct aberto agora, IP final, app, conteúdo e saída main/LB.</p>
             </div>
             <div class="muted" id="stamp">atualizando…</div>
+            <div><span class="tag" id="freshbar">verificando frescor do dado…</span></div>
         </div>
         <div class="kpis" id="kpis">
             <div class="kpi"><span class="muted">carregando</span><b>…</b></div>
@@ -220,7 +221,26 @@ async function getJson(url) {
   if (!r.ok) throw new Error('http ' + r.status);
   const d = await r.json();
   if (d.error) throw new Error(d.detail || d.error);
+  if (d._meta) applyMeta(d._meta);
   return d;
+}
+
+// Frescor + polling adaptativo (Fase 1.3/1.4): o servidor manda a idade do
+// dado e o intervalo que o painel deve usar. Assim nenhuma aba martela o
+// SQLite mais rápido do que a fonte se atualiza.
+const pollHint = {ms: 0};
+function applyMeta(meta) {
+  if (Number(meta.poll_after_ms) > 0) pollHint.ms = Number(meta.poll_after_ms);
+  const box = document.getElementById('freshbar');
+  if (!box) return;
+  const age = Number(meta.data_age_seconds || 0);
+  if (meta.degraded) {
+    box.className = 'tag warn';
+    box.textContent = 'dado com ' + age + 's de atraso — ' + (meta.reasons || []).join(' | ');
+  } else {
+    box.className = 'tag ok';
+    box.textContent = 'ao vivo (fonte com ' + age + 's, consulta ' + (meta.query_ms || 0) + 'ms)';
+  }
 }
 
 const POLL_USERS_MS = 6000;
@@ -360,10 +380,24 @@ async function tickSessions() {
 }
 
 function bootLoop(fn, ms, onFail) {
+  let backoff = 1;
   const loop = async () => {
-    try { await fn(); }
-    catch (e) { if (onFail) onFail(e); }
-    setTimeout(loop, ms);
+    let next = ms;
+    if (document.hidden || $('pause').checked) {
+      // Aba em segundo plano ou pausada não consulta nada.
+      setTimeout(loop, 5000);
+      return;
+    }
+    try {
+      await fn();
+      backoff = 1;
+      next = Math.max(ms, pollHint.ms || 0);
+    } catch (e) {
+      if (onFail) onFail(e);
+      backoff = Math.min(backoff * 2, 8);
+      next = ms * backoff;
+    }
+    setTimeout(loop, next);
   };
   loop();
 }

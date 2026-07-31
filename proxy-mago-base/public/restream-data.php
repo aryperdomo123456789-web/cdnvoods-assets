@@ -172,14 +172,16 @@ try {
             ];
     }
     // Meta em TODA resposta: o painel mostra a idade do dado, então ninguém
-    // olha número velho pensando que é ao vivo.
+    // olha número velho pensando que é ao vivo. `poll_after_ms` é o intervalo
+    // adaptativo que o front obedece (Fase 1.3 + 1.4).
+    $queryMs = (int) round((microtime(true) - $t0) * 1000);
     $out['_meta'] = [
         'view' => $view,
         'generated_at' => date('c'),
         'epoch' => time(),
-        'query_ms' => (int) round((microtime(true) - $t0) * 1000),
+        'query_ms' => $queryMs,
         'db_lock_retries' => Database::lockRetries(),
-    ];
+    ] + Freshness::meta($view, $queryMs);
     echo json_encode($out, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 } catch (Throwable $e) {
     http_response_code(500);

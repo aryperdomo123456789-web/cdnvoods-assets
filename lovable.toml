@@ -1,4 +1,4 @@
 [run]
 dev = "bash -lc 'cd proxy-mago-base && nix run nixpkgs#php82 -- -S 0.0.0.0:8080 -t public bin/router.php'"
-build = "bash -lc 'cd proxy-mago-base && nix run nixpkgs#php82 -- -l app/CdnSession.php'"
-"build:dev" = "bash -lc 'cd proxy-mago-base && nix run nixpkgs#php82 -- -l app/CdnSession.php'"
+build = "bash bin/build-dist.sh"
+"build:dev" = "bash bin/build-dist.sh"
