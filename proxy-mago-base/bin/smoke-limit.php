@@ -43,10 +43,10 @@ $cleanup();
 
 // Usuário espelhado do XUI com plano de 1 conexão.
 $pdo->prepare(
-    'INSERT INTO xui_users_cache (username, password, user_id, max_connections, enabled, exp_date, synced_at, synced_epoch)
-     VALUES (:u,:p,999001,1,1,0,:at,:ae)
-     ON CONFLICT(username) DO UPDATE SET max_connections=1, enabled=1, password=excluded.password'
-)->execute([':u' => $user, ':p' => $pass, ':at' => date('c'), ':ae' => time()]);
+    'INSERT INTO xui_users_cache (username, password_masked, user_id, max_connections, enabled, exp_date, synced_at)
+     VALUES (:u,:p,999001,1,1,0,:at)
+     ON CONFLICT(username) DO UPDATE SET max_connections=1, enabled=1'
+)->execute([':u' => $user, ':p' => '***', ':at' => date('c')]);
 
 $touch = static function (string $ip, int $streamId, string $path, string $ua): string {
     $_SERVER['HTTP_USER_AGENT'] = $ua;
