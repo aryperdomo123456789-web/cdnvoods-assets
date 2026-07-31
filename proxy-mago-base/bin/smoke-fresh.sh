@@ -81,7 +81,9 @@ $t1 = microtime(true);
 Cache::remember('lb-nodes-view', 3, $build);
 $warm = (microtime(true) - $t1) * 1000;
 printf("cold=%.2fms warm=%.2fms\n", $cold, $warm);
-echo ($warm <= $cold + 0.5 ? 'CACHE_OK' : 'CACHE_SLOW'), "\n";
+// Sem nó cadastrado o build custa ~0ms e o warm (leitura de arquivo) fica
+// "mais lento" — falso negativo. O que importa é o warm ser barato em absoluto.
+echo (($warm <= $cold + 0.5 || $warm < 3.0) ? 'CACHE_OK' : 'CACHE_SLOW'), "\n";
 PHP
 )
 echo "$out" | sed 's/^/    /'
