@@ -4,6 +4,8 @@
   "version": "1.0.0",
   "description": "CDN Voods - proxy PHP (sem build JS; dev server via lovable.toml)",
   "scripts": {
-    "dev": "nix run nixpkgs#php82 -- -S 0.0.0.0:8080 -t public bin/router.php"
+    "dev": "nix run nixpkgs#php82 -- -S 0.0.0.0:8080 -t proxy-mago-base/public proxy-mago-base/bin/router.php",
+    "build": "bash bin/build-dist.sh",
+    "build:dev": "bash bin/build-dist.sh"
   }
 }
