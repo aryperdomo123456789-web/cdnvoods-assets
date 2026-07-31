@@ -44,8 +44,9 @@ Regras: single XUI manda; documento `2026-07-31` vence documento antigo; execuç
 
 1. ~~`S1-P0` — supersede de sessão em `movie`/`series`~~ FEITO em `app/CdnSession.php`.
 2. ~~`S1-P1` — `bin/smoke-lb.sh`~~ FEITO (5 ok / 0 falhas neste ambiente, sem LB cadastrado).
-3. `S1-P2` — `_meta` com `data_age_ms` + aviso de modo degradado em `lb-data.php` e nos cards do painel.
-4. `S2-P0-4` — abstração de persistência (config / runtime quente / auditoria / espelho XUI) antes de qualquer migração para PostgreSQL.
+3. ~~`S1-P2` — `_meta` com `data_age_ms` + aviso de modo degradado~~ FEITO em `app/Freshness.php`, `public/lb-data.php`, `public/restream-data.php`, `public/lb.php`, `public/restream.php` (`bin/smoke-fresh.sh`: 8 ok / 0 falhas).
+4. `S1-P3` — instalar `LB-02` real pelo painel e registrar o baseline medido em `docs/BASELINE_CARGA_LB.md`.
+5. `S2-P0-4` — abstração de persistência (config / runtime quente / auditoria / espelho XUI) antes de qualquer migração para PostgreSQL.
 
 Nada de migrar banco antes de fechar 1 e 2: contagem errada em banco novo continua contagem errada.
 
@@ -55,7 +56,10 @@ Nada de migrar banco antes de fechar 1 e 2: contagem errada em banco novo contin
 Visão: `docs/PLANO_ESCALA_SUPREMA_MAIN_LB_2026-07-31.md`
 Execução em fases (é este que se segue no dia a dia): `docs/PLANO_EXECUCAO_ESCALA_FASES_2026-07-31.md`
 
-Fase 1 (agora): 1.1 supersede FEITO, 1.2 smoke de LB FEITO, restam 1.3 frescor
-de dados, 1.4 polling adaptativo, 1.5 jobs fora do caminho quente, 1.6 pacote
-padrão para `LB-02`, 1.7 baseline de carga. Redis (Fase 2), PostgreSQL (Fase 3)
-e motor Go (Fase 4) só depois da Fase 1 fechada.
+Fase 1 (agora): 1.1 supersede FEITO, 1.2 smoke de LB FEITO, 1.3 frescor de dados
+FEITO, 1.4 polling adaptativo FEITO, 1.5 jobs em perfis `fast`/`heavy` com lock e
+disjuntor FEITO, 1.6 pacote padrão de LB FEITO (`bin/lb-install.sh` +
+`app/LbPackageBuilder.php`, instalação automática ao salvar). Resta 1.7: rodar o
+baseline de carga no `LB-02` real e preencher os números em
+`docs/BASELINE_CARGA_LB.md`. Redis (Fase 2), PostgreSQL (Fase 3) e motor Go
+(Fase 4) só depois disso.
