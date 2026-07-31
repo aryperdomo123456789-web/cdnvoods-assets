@@ -167,16 +167,27 @@ if ($REQ->username !== '' && Divergence::shouldBlock($REQ->username, CdnSession:
     return;
 }
 
-if ($REQ->username !== '' && !UserIpLock::matches($REQ->username, $clientIp)) {
-    CdnSession::reject($SESSION_KEY, 'cdn_ip_lock_blocked');
-    Audit::log(
-        'cdn_ip_lock_blocked',
-        sprintf('request_id=%s user=%s client_ip=%s host=%s', $REQ->requestId, $REQ->username, $clientIp, $host),
-        $clientIp,
-        $userAgent
-    );
-    proxy_fail(403, $host, $path, 'cdn_ip_lock_blocked');
-    return;
+if ($REQ->username !== '') {
+    $ipVerdict = UserIpLock::explain($REQ->username, $clientIp);
+    if (!$ipVerdict['allowed']) {
+        CdnSession::reject($SESSION_KEY, 'cdn_ip_lock_blocked');
+        Audit::log(
+            'cdn_ip_lock_blocked',
+            sprintf(
+                'request_id=%s user=%s client_ip=%s host=%s motivo=%s regras=%d',
+                $REQ->requestId,
+                $REQ->username,
+                $clientIp,
+                $host,
+                $ipVerdict['reason'],
+                $ipVerdict['rules']
+            ),
+            $clientIp,
+            $userAgent
+        );
+        proxy_fail(403, $host, $path, 'cdn_ip_lock_blocked');
+        return;
+    }
 }
 
 // Rastreabilidade: abre o evento estruturado deste request.
