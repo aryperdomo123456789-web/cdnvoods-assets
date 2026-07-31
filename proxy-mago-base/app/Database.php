@@ -129,6 +129,11 @@ final class Database
             } catch (Throwable $e) {
                 $msg = strtolower($e->getMessage());
                 $locked = str_contains($msg, 'locked') || str_contains($msg, 'busy');
+                if ($locked && class_exists('DbLockDiag')) {
+                    // Instrumentação: sem isso o log só diz "database is locked"
+                    // e não diz qual tabela/operação nem quem escrevia junto.
+                    DbLockDiag::note('(via tag)', 'write', $tag, $e->getMessage(), $i, $i >= $attempts);
+                }
                 if (!$locked || $i >= $attempts) {
                     error_log('[db:' . $tag . '] ' . $e->getMessage());
                     return false;
