@@ -216,9 +216,10 @@ final class CdnSession
                    (session_key, username, credential_fingerprint, client_ip, user_agent, public_host,
                     session_kind, last_route_kind, stream_id, started_at, started_epoch, uptime_start_epoch,
                     last_seen_at, last_seen_epoch, idle_timeout, status, requests, last_request_id,
-                    direct_source, direct_mode, direct_host_db, direct_host_effective, direct_first_epoch, direct_last_epoch)
+                    direct_source, direct_mode, direct_host_db, direct_host_effective, direct_first_epoch, direct_last_epoch,
+                    active_requests, last_open_epoch)
                  VALUES (:k,:u,:f,:ip,:ua,:h,:kind,:rk,:sid,:sa,:se,:use,:la,:le,:idle,\'active\',1,:rid,
-                         :ds,:dm,:hdb,:heff,:dfe,:dle)
+                         :ds,:dm,:hdb,:heff,:dfe,:dle,1,:le2)
                  ON CONFLICT(session_key) DO UPDATE SET
                    last_seen_at=excluded.last_seen_at,
                    last_seen_epoch=excluded.last_seen_epoch,
@@ -286,6 +287,7 @@ final class CdnSession
                 ':heff' => $directHostDb,
                 ':dfe' => $directFlag ? $now : 0,
                 ':dle' => $directFlag ? $now : 0,
+                ':le2' => $now,
             ]);
         }, 'cdnsession.touch');
         if ($ok) {
