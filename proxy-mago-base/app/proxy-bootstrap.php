@@ -14,6 +14,7 @@ declare(strict_types=1);
 date_default_timezone_set('America/Sao_Paulo');
 
 require_once dirname(__DIR__) . '/app/Config.php';
+require_once dirname(__DIR__) . '/app/Sql.php';
 require_once dirname(__DIR__) . '/app/Database.php';
 require_once dirname(__DIR__) . '/app/SettingsRepository.php';
 require_once dirname(__DIR__) . '/app/Audit.php';

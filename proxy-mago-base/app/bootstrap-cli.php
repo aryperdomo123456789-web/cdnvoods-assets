@@ -12,7 +12,7 @@ date_default_timezone_set('America/Sao_Paulo');
 $root = dirname(__DIR__);
 
 foreach ([
-    'Config', 'Cache', 'Freshness', 'Database', 'DbLockDiag', 'SettingsRepository', 'Audit', 'NginxGenerator',
+    'Config', 'Sql', 'Cache', 'Freshness', 'Database', 'DbLockDiag', 'SettingsRepository', 'Audit', 'NginxGenerator',
     'OriginRepository', 'AliasRepository', 'XuiOrigin', 'Tokens', 'AccessGuard',
     'RequestContext', 'RequestLog', 'CredentialGuard', 'CdnSession', 'AuditTimeline',
     'DirectSourceParser', 'DirectCatalog', 'DirectSource', 'DirectHostHealth', 'XuiSeriesCompat',
