@@ -41,11 +41,18 @@ $_SERVER['HTTP_USER_AGENT'] = 'SmokeTV/1.0';
 $key = hot(static fn() => CdnSession::touch(RequestContext::build('smoke.local', '203.0.113.77', "/live/$user/pass/9001.ts", [])), 'cdn_sessions', 'touch');
 check('sessão aberta', $key !== '');
 
-$active = static function () use ($pdo): int {
-    return (int) $pdo->query(
-        'SELECT COUNT(*) FROM cdn_sessions WHERE ' . CdnSession::activeWhereSql(time()) . '
+$active = static function () use ($pdo, $user): int {
+    // O smoke roda em uma VPS com tráfego real. Contar a tabela inteira fazia
+    // "sessão viva agora" falhar quando QUALQUER cliente legítimo estava ativo
+    // e "sessão fantasma" falhar enquanto restasse outra sessão pública.
+    // A prova deve observar exclusivamente a sessão sintética criada acima.
+    $st = $pdo->prepare(
+        'SELECT COUNT(*) FROM cdn_sessions WHERE username = :u
+           AND ' . CdnSession::activeWhereSql(time()) . '
            AND ' . CdnSession::publicClientWhereSql()
-    )->fetchColumn();
+    );
+    $st->execute([':u' => $user]);
+    return (int) $st->fetchColumn();
 };
 
 echo "\n== 1. in_flight recente ainda conta\n";

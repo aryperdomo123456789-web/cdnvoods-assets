@@ -31,6 +31,13 @@ validacao da VPS `45.140.192.237`:
 - Mitigacoes que existem hoje (teto, nao solucao): `WAL`,
   `busy_timeout = 30000`, `Database::write()` com backoff, rollup leve para
   tirar `COUNT` caro do tick do painel.
+- Lock residual identificado na inicializacao: `configureConnection()` executava
+  `PRAGMA journal_mode = WAL` em toda nova conexao ANTES de configurar o
+  `busy_timeout`. PHP-FPM, jobs e CLI podiam disputar a mudanca de journal mode;
+  a excecao nascia antes de `Database::write()` e portanto escapava do retry.
+  Agora o timeout e instalado primeiro e o modo so e alterado quando o banco
+  ainda nao esta em WAL. Isso fecha essa janela especifica, mas nao transforma
+  SQLite em banco multi-writer.
 - Regra oficial de prova, a partir de agora:
   - smoke que escreve em `cdn_sessions`, `proxy_request_events`,
     `proxy_user_runtime` ou `cdn_metrics` roda SERIALIZADO;
@@ -106,3 +113,15 @@ Criterio de aceite: `smoke-runtime-live` isolado 15/15, `bin/smoke-all.sh` com
 - Ambiente de PRODUCAO (`45.140.192.237`): PENDENTE de rerun por quem tem
   acesso ao host. Nao ha aqui prova da VPS, e este documento nao declara
   "producao validada" sem ela.
+
+## 6. Falha de sessao ativa no smoke concorrente
+
+- Causa exata: as assercoes "sessao viva agora" e "sessao fantasma nao conta
+  mais" faziam `COUNT(*)` global em `cdn_sessions`. Em VPS com clientes reais,
+  o esperado `1`/`0` era contaminado por qualquer outra sessao publica ativa.
+- Correcao: o contador do smoke agora filtra `username = smoke_live_user`, a
+  identidade sintetica limpa no inicio e no fim do teste. A regra de producao
+  em `CdnSession::activeWhereSql()` nao foi afrouxada nem mascarada.
+- A serializacao por `smoke-hot.lock` coordena os smokes entre si; PHP-FPM e jobs
+  nao adquirem esse lock. Logo ela evita bateria concorrente artificial, mas nao
+  promete serializar os escritores reais da VPS.
