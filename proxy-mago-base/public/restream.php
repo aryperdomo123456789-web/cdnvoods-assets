@@ -379,10 +379,24 @@ async function tickSessions() {
 }
 
 function bootLoop(fn, ms, onFail) {
+  let backoff = 1;
   const loop = async () => {
-    try { await fn(); }
-    catch (e) { if (onFail) onFail(e); }
-    setTimeout(loop, ms);
+    let next = ms;
+    if (document.hidden || $('pause').checked) {
+      // Aba em segundo plano ou pausada não consulta nada.
+      setTimeout(loop, 5000);
+      return;
+    }
+    try {
+      await fn();
+      backoff = 1;
+      next = Math.max(ms, pollHint.ms || 0);
+    } catch (e) {
+      if (onFail) onFail(e);
+      backoff = Math.min(backoff * 2, 8);
+      next = ms * backoff;
+    }
+    setTimeout(loop, next);
   };
   loop();
 }
