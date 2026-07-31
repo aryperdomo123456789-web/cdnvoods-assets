@@ -18,7 +18,10 @@
 smoke_resolve_php() {
   if [ -n "${PHP_BIN:-}" ]; then PHP=("$PHP_BIN")
   elif command -v php >/dev/null 2>&1; then PHP=(php)
-  elif command -v nix >/dev/null 2>&1; then PHP=(nix run nixpkgs#php82 --)
+  elif command -v nix >/dev/null 2>&1; then
+    # Precisa ser um BINARIO real: exportar "nix run ..." como PHP_BIN quebra
+    # os smokes filhos, que chamam "$PHP_BIN arquivo.php".
+    PHP=("$(nix build nixpkgs#php82 --no-link --print-out-paths)/bin/php")
   else echo "PHP nao encontrado (exporte PHP_BIN)" >&2; exit 2; fi
   export PHP_RESOLVED="${PHP[0]}"
 }
