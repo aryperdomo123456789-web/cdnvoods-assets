@@ -94,7 +94,28 @@ final class CdnSession
      */
     public static function publicClientWhereSql(string $table = 'cdn_sessions'): string
     {
+        if (self::countsLoopback()) {
+            return '(1 = 1)';
+        }
+
         return '(' . $table . '.client_ip NOT IN (\'127.0.0.1\', \'::1\', \'\', \'-\'))';
+    }
+
+    /**
+     * Em produção o loopback é ruído (health check, cron, curl local) e fica fora
+     * dos KPIs. No laboratório o tráfego real chega por 127.0.0.1, então existe
+     * um interruptor explícito para contar loopback sem mudar nada em produção.
+     */
+    public static function countsLoopback(): bool
+    {
+        static $flag = null;
+
+        if ($flag === null) {
+            $flag = getenv('CDN_LAB_COUNT_LOOPBACK') === '1'
+                || (int) SettingsRepository::get('lab_count_loopback', 0) === 1;
+        }
+
+        return (bool) $flag;
     }
 
     public static function directEffectiveSql(string $table = 'cdn_sessions'): string
