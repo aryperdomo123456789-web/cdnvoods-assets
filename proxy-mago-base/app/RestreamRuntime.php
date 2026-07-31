@@ -786,11 +786,26 @@ final class RestreamRuntime
         return $out;
     }
 
-    /** Idade do rollup leve, para o painel avisar modo degradado. */
-    public static function rollupAgeSeconds(): int
+    /**
+     * Idade máxima do rollup leve entre as métricas informadas.
+     *
+     * Contrato único: SEMPRE inteiro >= 0. Rollup ausente não pode devolver -1
+     * (o painel e os smokes tratam o campo como idade, não como código de
+     * erro); ausência = idade acima do teto, ou seja, degradado explícito.
+     *
+     * @param array<int,string> $metrics
+     */
+    public static function rollupAgeSeconds(array $metrics = ['connections_active']): int
     {
-        $aged = self::latestMetricsAged(['connections_active']);
-        return isset($aged['connections_active']) ? (int) $aged['connections_active']['age'] : -1;
+        $aged = self::latestMetricsAged($metrics);
+        $age = 0;
+        foreach ($metrics as $m) {
+            if (!isset($aged[(string) $m])) {
+                return self::ROLLUP_MAX_AGE * 10;
+            }
+            $age = max($age, (int) $aged[(string) $m]['age']);
+        }
+        return max(0, $age);
     }
 
     /**
