@@ -42,10 +42,10 @@ $cleanup = static function () use ($pdo, $user, $prevMode, $prevTol, $prevLoopba
 $cleanup();
 
 // Usuário espelhado do XUI com plano de 1 conexão.
+$pdo->prepare('DELETE FROM xui_users_cache WHERE username = :u')->execute([':u' => $user]);
 $pdo->prepare(
     'INSERT INTO xui_users_cache (username, password_masked, user_id, max_connections, enabled, exp_date, synced_at)
-     VALUES (:u,:p,999001,1,1,0,:at)
-     ON CONFLICT(username) DO UPDATE SET max_connections=1, enabled=1'
+     VALUES (:u,:p,999001,1,1,0,:at)'
 )->execute([':u' => $user, ':p' => '***', ':at' => date('c')]);
 
 $touch = static function (string $ip, int $streamId, string $path, string $ua): string {
