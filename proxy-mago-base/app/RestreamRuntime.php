@@ -588,6 +588,7 @@ final class RestreamRuntime
             'SELECT COUNT(*) FROM direct_source_hops WHERE ts_epoch >= ' . ($now - 3600) . ' AND outcome <> \'followed\''
         )->fetchColumn();
         $div = Divergence::counters();
+        $divOperational = Divergence::countersOperational();
         // Estes dois iam no caminho do painel (2 COUNT por tick). Agora o
         // resumo lê do rollup e só reconta se o rollup estiver velho.
         $runtimeActive = (int) $pdo->query(
@@ -617,6 +618,9 @@ final class RestreamRuntime
             'divergences_critical' => (int) ($div['critical'] ?? 0),
             'divergences_warn' => (int) ($div['warn'] ?? 0),
             'divergences_info' => (int) ($div['info'] ?? 0),
+            'divergences_operational_critical' => (int) ($divOperational['critical'] ?? 0),
+            'divergences_operational_warn' => (int) ($divOperational['warn'] ?? 0),
+            'divergences_operational_info' => (int) ($divOperational['info'] ?? 0),
             'direct_streams_db' => (int) $dc['streams_db'],
             'direct_db_runtime' => (int) $dc['db_runtime'],
             'direct_runtime_only' => (int) $dc['runtime_only'],
@@ -853,6 +857,9 @@ final class RestreamRuntime
             'divergences_critical',
             'divergences_warn',
             'divergences_info',
+            'divergences_operational_critical',
+            'divergences_operational_warn',
+            'divergences_operational_info',
             'direct_streams_db',
             'direct_db_runtime',
             'direct_runtime_only',
@@ -956,19 +963,19 @@ final class RestreamRuntime
             // O painel consome o snapshot do job. Recontar cdn_divergences em
             // cada polling duplicava trabalho e travava em bases históricas.
             'divergences' => [
-                'critical' => (int) ($metrics['divergences_critical'] ?? 0),
-                'warn' => (int) ($metrics['divergences_warn'] ?? 0),
-                'info' => (int) ($metrics['divergences_info'] ?? 0),
+                'critical' => (int) ($metrics['divergences_operational_critical'] ?? 0),
+                'warn' => (int) ($metrics['divergences_operational_warn'] ?? 0),
+                'info' => (int) ($metrics['divergences_operational_info'] ?? 0),
             ],
             'divergences_operational' => [
-                'critical' => (int) ($metrics['divergences_critical'] ?? 0),
-                'warn' => (int) ($metrics['divergences_warn'] ?? 0),
-                'info' => (int) ($metrics['divergences_info'] ?? 0),
+                'critical' => (int) ($metrics['divergences_operational_critical'] ?? 0),
+                'warn' => (int) ($metrics['divergences_operational_warn'] ?? 0),
+                'info' => (int) ($metrics['divergences_operational_info'] ?? 0),
             ],
             'divergences_catalog_noise' => [
-                'critical' => 0,
-                'warn' => 0,
-                'info' => 0,
+                'critical' => max(0, (int) ($metrics['divergences_critical'] ?? 0) - (int) ($metrics['divergences_operational_critical'] ?? 0)),
+                'warn' => max(0, (int) ($metrics['divergences_warn'] ?? 0) - (int) ($metrics['divergences_operational_warn'] ?? 0)),
+                'info' => max(0, (int) ($metrics['divergences_info'] ?? 0) - (int) ($metrics['divergences_operational_info'] ?? 0)),
             ],
             'limit_mode' => Divergence::mode(),
         ];
