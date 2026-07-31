@@ -714,6 +714,69 @@ final class RestreamRuntime
     }
 
     /**
+     * Idade do rollup por métrica.
+     *
+     * @return array<string,array{value:int,age:int}>
+     */
+    public static function latestMetricsAged(array $metrics): array
+    {
+        $metrics = array_values(array_unique(array_filter(array_map('strval', $metrics))));
+        if ($metrics === []) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($metrics), '?'));
+        $st = Database::pdo()->prepare(
+            'SELECT metric, value, ts_epoch
+               FROM cdn_metrics
+              WHERE metric IN (' . $placeholders . ')
+                AND ts_epoch = (
+                     SELECT MAX(ts_epoch) FROM cdn_metrics c2 WHERE c2.metric = cdn_metrics.metric
+                )'
+        );
+        $st->execute($metrics);
+        $now = time();
+        $out = [];
+        foreach ($st->fetchAll() as $row) {
+            $out[(string) $row['metric']] = [
+                'value' => (int) $row['value'],
+                'age' => max(0, $now - (int) $row['ts_epoch']),
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * Rollup só vale se for RECENTE.
+     *
+     * O painel oscilava porque a leitura caía para recontagem apenas quando o
+     * rollup marcava zero; rollup atrasado com número velho passava como se
+     * fosse ao vivo. Agora: métrica ausente ou velha => null, e quem chamou
+     * decide (recontar uma vez, dentro do cache de 5s).
+     *
+     * @return array<string,int>|null
+     */
+    public static function metricsIfFresh(array $metrics, int $maxAge = self::ROLLUP_MAX_AGE): ?array
+    {
+        $aged = self::latestMetricsAged($metrics);
+        $out = [];
+        foreach ($metrics as $m) {
+            $m = (string) $m;
+            if (!isset($aged[$m]) || $aged[$m]['age'] > $maxAge) {
+                return null;
+            }
+            $out[$m] = $aged[$m]['value'];
+        }
+        return $out;
+    }
+
+    /** Idade do rollup leve, para o painel avisar modo degradado. */
+    public static function rollupAgeSeconds(): int
+    {
+        $aged = self::latestMetricsAged(['connections_active']);
+        return isset($aged['connections_active']) ? (int) $aged['connections_active']['age'] : -1;
+    }
+
+    /**
      * Saúde rápida do cérebro para polling do painel.
      *
      * Não pode chamar kpisFresh() completo porque isso reabre contagens pesadas.
