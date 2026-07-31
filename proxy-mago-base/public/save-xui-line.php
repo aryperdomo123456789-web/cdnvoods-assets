@@ -16,16 +16,25 @@ if ($id <= 0) {
 }
 
 try {
+    // Trava de IP: regra inválida nunca é engolida em silêncio, o painel avisa.
+    $ipLockFlash = static function (array $result): string {
+        $msg = sprintf(' Trava CDN por IP: %d regra(s) ativa(s).', count($result['valid']));
+        if ($result['invalid'] !== []) {
+            $msg .= ' Recusadas (formato inválido): ' . implode(', ', array_slice($result['invalid'], 0, 5)) . '.';
+        }
+        return $msg;
+    };
+
     if ($action === 'update') {
         $updated = XuiAdmin::updateLine($id, $_POST);
-        UserIpLock::save(
+        $ipResult = UserIpLock::save(
             (string) ($_POST['username'] ?? $updated['username']),
             (string) ($_POST['cdn_allowed_ips'] ?? ''),
             (string) ($_POST['cdn_ip_notes'] ?? '')
         );
         $stats = ['processed' => 0, 'details' => []];
         XuiSyncService::syncUsers($stats);
-        $_SESSION['flash'] = 'Linha ' . $updated['username'] . ' atualizada no XUI.';
+        $_SESSION['flash'] = 'Linha ' . $updated['username'] . ' atualizada no XUI.' . $ipLockFlash($ipResult);
         header('Location: /xui-user.php?id=' . $id);
         exit;
     }
@@ -39,12 +48,13 @@ try {
     }
     if ($action === 'ip_lock') {
         $line = XuiAdmin::findLine($id);
-        UserIpLock::save(
+        $ipResult = UserIpLock::save(
             (string) $line['username'],
             (string) ($_POST['cdn_allowed_ips'] ?? ''),
             (string) ($_POST['cdn_ip_notes'] ?? '')
         );
-        $_SESSION['flash'] = 'Trava CDN por IP atualizada para o usuário ' . $line['username'] . '.';
+        $_SESSION['flash'] = 'Trava CDN por IP atualizada para o usuário ' . $line['username'] . '.'
+            . $ipLockFlash($ipResult);
         header('Location: /xui-user.php?id=' . $id);
         exit;
     }
