@@ -29,6 +29,35 @@ say()  { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 run() { "${PHP[@]}" -r 'require getenv("SMOKE_BASE")."/app/bootstrap-cli.php"; eval(file_get_contents("php://stdin"));'; }
 export SMOKE_BASE="$BASE"
 
+# Pré-condição: com cdn_sessions_enabled=0 o touch() nao grava nada e o smoke
+# falharia por ambiente. Liga so durante o teste e restaura o valor anterior.
+PREV_SESSIONS=$(run <<'PHP'
+$row = Database::pdo()->query("SELECT value FROM settings WHERE key = 'cdn_sessions_enabled' LIMIT 1")->fetch();
+echo $row === false ? '__absent__' : (string) $row['value'];
+PHP
+)
+restore_sessions() {
+  PREV="$PREV_SESSIONS" run <<'PHP' >/dev/null 2>&1
+$prev = (string) getenv('PREV');
+if ($prev === '__absent__') {
+    Database::pdo()->exec("DELETE FROM settings WHERE key = 'cdn_sessions_enabled'");
+} else {
+    $st = Database::pdo()->prepare(
+        'INSERT INTO settings (key, value, updated_at) VALUES (:k,:v,:u)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at'
+    );
+    $st->execute([':k' => 'cdn_sessions_enabled', ':v' => $prev, ':u' => date('c')]);
+}
+Cache::flush();
+PHP
+}
+trap restore_sessions EXIT
+run <<'PHP' | sed 's/^/    /'
+SettingsRepository::set('cdn_sessions_enabled', 1);
+Cache::flush();
+echo 'CdnSession::enabled=', CdnSession::enabled() ? 1 : 0, "\n";
+PHP
+
 say "1. nos cadastrados e score"
 out=$(run <<'PHP'
 $nodes = LbNode::all();
