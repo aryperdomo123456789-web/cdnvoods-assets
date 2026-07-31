@@ -1010,6 +1010,53 @@ final class Database
         );
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_jsh_run ON job_step_history(run_id, seq)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_jsh_job ON job_step_history(job_name, ts_epoch)');
+
+        // S2-P0-5 — drift de colunas encontrado no ENSAIO DE CORTE.
+        //
+        // No SQLite estas colunas nasceram por ALTER TABLE ao longo das fases
+        // (rastreio de direct source, jobs por etapa, roteamento por LB). O
+        // espelho pgsql só tinha o CREATE TABLE original, então um corte real
+        // teria perdido justamente a trilha de rastreabilidade. Declaração com
+        // aspas SIMPLES: no Postgres, DEFAULT "" é identificador, não string.
+        $drift = [
+            'proxy_request_events' => [
+                'direct_host' => "TEXT NOT NULL DEFAULT ''",
+                'hops' => 'INTEGER NOT NULL DEFAULT 0',
+                'direct_mode' => "TEXT NOT NULL DEFAULT ''",
+                'direct_host_db' => "TEXT NOT NULL DEFAULT ''",
+                'lb_id' => 'INTEGER NOT NULL DEFAULT 0',
+            ],
+            'direct_source_hops' => [
+                'stream_id' => 'INTEGER NOT NULL DEFAULT 0',
+                'public_host' => "TEXT NOT NULL DEFAULT ''",
+                'client_ip' => "TEXT NOT NULL DEFAULT ''",
+                'player' => "TEXT NOT NULL DEFAULT ''",
+                'route_kind' => "TEXT NOT NULL DEFAULT ''",
+                'final_host' => "TEXT NOT NULL DEFAULT ''",
+                'direct_mode' => "TEXT NOT NULL DEFAULT 'runtime'",
+                'host_from_db' => "TEXT NOT NULL DEFAULT ''",
+                'error' => "TEXT NOT NULL DEFAULT ''",
+            ],
+            'job_runs' => [
+                'last_step' => "TEXT NOT NULL DEFAULT ''",
+                'steps_done' => 'INTEGER NOT NULL DEFAULT 0',
+                'lock_retries' => 'INTEGER NOT NULL DEFAULT 0',
+                'host' => "TEXT NOT NULL DEFAULT ''",
+            ],
+            'job_state' => [
+                'current_step' => "TEXT NOT NULL DEFAULT ''",
+                'last_run_id' => "TEXT NOT NULL DEFAULT ''",
+                'circuit_open_until' => 'BIGINT NOT NULL DEFAULT 0',
+                'circuit_reason' => "TEXT NOT NULL DEFAULT ''",
+                'skipped_runs' => 'INTEGER NOT NULL DEFAULT 0',
+                'max_duration_ms' => 'BIGINT NOT NULL DEFAULT 0',
+            ],
+        ];
+        foreach ($drift as $table => $columns) {
+            foreach ($columns as $column => $decl) {
+                self::addColumnIfMissing($pdo, $table, $column, $decl);
+            }
+        }
     }
 
     /**
