@@ -252,6 +252,43 @@ $routes = LbRouter::routes(200);
 <script>
 const LB_ID = <?php echo (int) $selected; ?>;
 let lbBusy = true;
+
+// Frescor da telemetria (Fase 1.3): telemetria velha não pode passar por
+// "servidor saudável". O intervalo vem do servidor (Fase 1.4).
+let lbNodesMs = 15000;
+async function tickNodes() {
+    const box = document.getElementById('lbfresh');
+    if (!box) return;
+    try {
+        const r = await fetch('/lb-data.php?view=nodes', {headers: {'Accept': 'application/json'}});
+        const j = await r.json();
+        const m = j._meta || {};
+        if (Number(m.poll_after_ms) > 0) lbNodesMs = Number(m.poll_after_ms);
+        const total = (j.items || []).length;
+        if (!total) {
+            box.className = 'alert';
+            box.textContent = 'Nenhum LB cadastrado ainda. Cadastre por IP, porta, usuário root e senha root.';
+            return;
+        }
+        const stale = Number(m.stale_nodes || 0);
+        const bad = Number(m.unhealthy_nodes || 0);
+        if (m.degraded || stale || bad) {
+            box.className = 'alert';
+            box.textContent = 'MODO DEGRADADO: ' + total + ' LB(s), ' + stale + ' com telemetria velha, '
+                + bad + ' fora de "ok". ' + (m.reasons || []).join(' | ');
+        } else {
+            box.className = 'alert success';
+            box.textContent = total + ' LB(s) com telemetria fresca (fonte com '
+                + Number(m.data_age_seconds || 0) + 's).';
+        }
+    } catch (e) { /* painel não pode quebrar por polling */ }
+}
+async function lbNodesLoop() {
+    if (!document.hidden) { await tickNodes(); }
+    setTimeout(lbNodesLoop, lbNodesMs);
+}
+lbNodesLoop();
+
 async function tick() {
     if (!LB_ID) return;
     try {
