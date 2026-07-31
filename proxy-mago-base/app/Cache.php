@@ -103,17 +103,19 @@ final class Cache
 
         try {
             $value = $producer();
+            self::$mem[$key] = ['exp' => $now + min(max($ttl, 1), 2), 'v' => $value];
+            if ($ttl > 0) {
+                // Grava ANTES de soltar o lock: quem está esperando encontra
+                // o valor novo, nunca o vencido.
+                $tmp = $file . '.' . getmypid() . '.tmp';
+                if (@file_put_contents($tmp, json_encode(['v' => $value])) !== false) {
+                    @rename($tmp, $file);
+                }
+            }
         } finally {
             if (is_resource($lock)) {
                 @flock($lock, LOCK_UN);
                 @fclose($lock);
-            }
-        }
-        self::$mem[$key] = ['exp' => $now + min(max($ttl, 1), 2), 'v' => $value];
-        if ($ttl > 0) {
-            $tmp = $file . '.' . getmypid() . '.tmp';
-            if (@file_put_contents($tmp, json_encode(['v' => $value])) !== false) {
-                @rename($tmp, $file);
             }
         }
         return $value;
