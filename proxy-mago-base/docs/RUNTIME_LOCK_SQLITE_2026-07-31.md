@@ -158,3 +158,30 @@ Criterio de aceite: `smoke-runtime-live` isolado 15/15, `bin/smoke-all.sh` com
 - A serializacao por `smoke-hot.lock` coordena os smokes entre si; PHP-FPM e jobs
   nao adquirem esse lock. Logo ela evita bateria concorrente artificial, mas nao
   promete serializar os escritores reais da VPS.
+
+## 7. Cache stampede (fechado em 2026-07-31, estado 89ae841+)
+
+Ponto que ficava aberto depois do `rollup_age_s`: quando o rollup atrasa,
+`kpisFresh()` volta a recontar sessoes. Com o painel em polling, varios
+processos venciam o TTL de 5s no MESMO segundo e TODOS entravam na recontagem
+pesada — foi essa multiplicacao (nao a query em si) que abria caminho para
+`database is locked`.
+
+Correcao em `app/Cache.php`:
+
+- **single-flight** por chave: `flock(LOCK_EX|LOCK_NB)` sobre `agg-<chave>.json.lock`.
+  Somente um processo executa o produtor por janela.
+- **stale-while-revalidate**: quem nao pegou o lock devolve o valor vencido
+  enquanto ele estiver na janela de graca (`STALE_GRACE = 60s`). O numero na tela
+  fica no maximo alguns segundos atras, e a query nao duplica.
+- **sem resposta vazia**: sem valor servivel, o concorrente espera o vencedor
+  (`flock` bloqueante) e reaproveita o resultado dele.
+- **gravacao antes do unlock**: o arquivo novo e publicado ainda sob o lock, para
+  que o processo em espera nunca leia a versao vencida.
+
+Prova: `bash bin/smoke-cache.sh` => 7 ok / 0 falhas, incluindo 8 processos PHP
+reais concorrendo na mesma chave com produtor de 400ms, resultado
+`apenas 1 produtor sob 8 concorrentes`. Suite incluida em `bin/smoke-all.sh`.
+
+Escopo desta prova: ambiente de desenvolvimento. A VPS `45.140.192.237` segue
+PENDENTE de rerun; nada aqui declara "producao validada".

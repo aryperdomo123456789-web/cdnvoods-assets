@@ -19,6 +19,7 @@ export PHP_BIN="${PHP_BIN:-$PHP_RESOLVED}"
 
 SUITES=(
   smoke-runtime-live.sh
+  smoke-cache.sh
   smoke-fresh.sh
   smoke-lb.sh
   smoke-ip-lock.sh
