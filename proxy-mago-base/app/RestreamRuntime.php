@@ -588,6 +588,17 @@ final class RestreamRuntime
             'SELECT COUNT(*) FROM direct_source_hops WHERE ts_epoch >= ' . ($now - 3600) . ' AND outcome <> \'followed\''
         )->fetchColumn();
         $div = Divergence::counters();
+        // Estes dois iam no caminho do painel (2 COUNT por tick). Agora o
+        // resumo lê do rollup e só reconta se o rollup estiver velho.
+        $runtimeActive = (int) $pdo->query(
+            'SELECT COUNT(*) FROM proxy_user_runtime
+              WHERE last_activity_epoch >= ' . ($now - self::ACTIVE_WINDOW) . '
+                AND active_connections_now > 0'
+        )->fetchColumn();
+        $overLimitNow = (int) $pdo->query(
+            'SELECT COUNT(*) FROM proxy_user_runtime
+              WHERE max_connections > 0 AND active_connections_now > max_connections'
+        )->fetchColumn();
         $ins = $pdo->prepare('INSERT INTO cdn_metrics (metric, value, ts_epoch) VALUES (:m,:v,:t)');
         // KPIs específicos de direct source: catálogo do XUI x consumo real.
         $dc = DirectCatalog::summary();
@@ -611,6 +622,8 @@ final class RestreamRuntime
             'direct_runtime_only' => (int) $dc['runtime_only'],
             'direct_mismatch' => (int) $dc['mismatch'],
             'direct_parse_errors' => (int) $dc['parse_errors'],
+            'users_runtime_active' => $runtimeActive,
+            'over_limit_now' => $overLimitNow,
         ];
         foreach ($metrics as $m => $v) {
             $ins->execute([':m' => $m, ':v' => $v, ':t' => $now]);
