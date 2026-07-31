@@ -875,7 +875,10 @@ final class RestreamRuntime
         $directNow = (int) ($metrics['direct_active'] ?? 0);
         $liveKeys = ['connections_active', 'users_active', 'fetch_active', 'direct_active'];
         $liveFresh = self::metricsIfFresh($liveKeys);
-        $rollupAge = self::rollupAgeSeconds();
+        // MESMA fonte que decide fresco/stale decide a idade publicada, senão
+        // o painel mostra "fresco" com idade de outra métrica (ou -1).
+        $rollupAge = self::rollupAgeSeconds($liveKeys);
+        $rollupStale = $liveFresh === null || $rollupAge > self::ROLLUP_MAX_AGE;
 
         // Recontamos SÓ quando o rollup está velho/ausente (não quando ele
         // legitimamente marca zero). Isso mata a oscilação "0 -> 3 -> 0" e
@@ -944,7 +947,7 @@ final class RestreamRuntime
             'match' => $byConf,
             'jobs_late' => $jobsLateNow,
             'rollup_age_s' => $rollupAge,
-            'rollup_stale' => $liveFresh === null,
+            'rollup_stale' => $rollupStale,
             // O painel ao vivo precisa refletir o que exige ação agora, não a
             // massa informativa do catálogo de direct source.
             'divergences' => $divOperational,
