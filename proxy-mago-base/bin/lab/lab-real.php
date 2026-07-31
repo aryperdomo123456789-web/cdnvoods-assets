@@ -19,7 +19,6 @@
 require __DIR__ . '/../../app/bootstrap-cli.php';
 
 putenv('CDN_LAB_COUNT_LOOPBACK=1');
-SettingsRepository::set('lab_count_loopback', 1);
 
 function env(string $k, string $default = ''): string
 {
