@@ -378,6 +378,10 @@ final class CdnSession
                 ':la' => date('c'), ':le' => time(),
                 ':lce' => time(),
                 ':dh' => $directHost, ':dh2' => $directHost, ':dh3' => $directHost,
+                ':dh4' => $directHost, ':dh5' => $directHost,
+                ':dh6' => $directHost, ':dh7' => $directHost,
+                ':dh8' => $directHost, ':dh9' => $directHost,
+                ':dfe' => time(), ':dle' => time(),
                 ':k' => $key,
             ]);
         }, 'cdnsession.record');
