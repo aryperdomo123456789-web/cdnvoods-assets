@@ -27,6 +27,7 @@ SUITES=(
   smoke-uptime.sh
   smoke-direct-health.sh
   smoke-portability.sh
+  smoke-pg-cut.sh
 )
 
 fails=0
