@@ -361,7 +361,17 @@ final class CdnSession
                             WHEN :dh <> \'\' AND uptime_start_epoch = 0 THEN started_epoch
                             ELSE uptime_start_epoch
                         END,
-                        direct_host = CASE WHEN :dh2 <> \'\' THEN :dh3 ELSE direct_host END
+                        direct_host = CASE WHEN :dh2 <> \'\' THEN :dh3 ELSE direct_host END,
+                        -- Coerência de rastreio: o host observado em runtime também
+                        -- alimenta as colunas que o painel e a triagem leem, para
+                        -- sessão nenhuma ficar com direct sem host final.
+                        direct_host_runtime = CASE WHEN :dh4 <> \'\' THEN :dh5 ELSE direct_host_runtime END,
+                        direct_host_effective = CASE WHEN :dh6 <> \'\' THEN :dh7 ELSE direct_host_effective END,
+                        direct_first_epoch = CASE
+                            WHEN :dh8 <> \'\' AND direct_first_epoch = 0 THEN :dfe
+                            ELSE direct_first_epoch
+                        END,
+                        direct_last_epoch = CASE WHEN :dh9 <> \'\' THEN :dle ELSE direct_last_epoch END
                   WHERE session_key = :k'
             )->execute([
                 ':b' => max(0, $bytes), ':e' => $status >= 400 ? 1 : 0,
