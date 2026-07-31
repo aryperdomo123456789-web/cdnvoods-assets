@@ -37,6 +37,17 @@ final class CdnSession
     ];
 
     /**
+     * Teto de vida de um request "em voo" (in_flight).
+     *
+     * `active_requests > 0` mantinha a sessão viva mesmo depois de o request
+     * morrer sem `record()` (cliente derrubou a conexão, worker do FPM foi
+     * morto, timeout de rede). Resultado: contador inflado por horas e
+     * sessão fantasma piscando no painel. Passado este teto sem NENHUM
+     * heartbeat, o in_flight deixa de contar e o sweep o zera.
+     */
+    public const IN_FLIGHT_MAX = 900;
+
+    /**
      * Janela expandida para consumo DIRECT de VOD.
      *
      * Em IBO Player / XCIPTV um filme/série pode virar um único request longo
@@ -98,7 +109,8 @@ final class CdnSession
         return '(' . $table . '.status = \'active\')
             AND ' . $table . '.last_seen_epoch >= ' . $floor . '
             AND (
-                ' . $table . '.active_requests > 0
+                (' . $table . '.active_requests > 0
+                    AND ' . $table . '.last_seen_epoch >= ' . ($now - self::IN_FLIGHT_MAX) . ')
                 OR ' . self::effectiveExpirySql($table) . ' >= ' . $now . '
             )';
     }
