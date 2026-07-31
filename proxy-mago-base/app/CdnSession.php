@@ -248,8 +248,7 @@ final class CdnSession
                    END,
                    uptime_start_epoch=CASE
                         WHEN cdn_sessions.uptime_start_epoch = 0 THEN excluded.uptime_start_epoch
-                        WHEN cdn_sessions.status <> \'active\'
-                         AND (excluded.last_seen_epoch - cdn_sessions.last_seen_epoch) <= ' . self::resumeGraceSql('cdn_sessions') . '
+                        WHEN (excluded.last_seen_epoch - cdn_sessions.last_seen_epoch) <= ' . self::resumeGraceSql('cdn_sessions') . '
                             THEN cdn_sessions.uptime_start_epoch
                         WHEN cdn_sessions.status <> \'active\'
                          OR (excluded.last_seen_epoch - cdn_sessions.last_seen_epoch) > cdn_sessions.idle_timeout
