@@ -1,0 +1,4 @@
+[run]
+dev = "cd proxy-mago-base && php -S 0.0.0.0:8080 -t public bin/router.php"
+build = "cd proxy-mago-base && find app public bin -name '*.php' -print0 | xargs -0 -n1 php -l"
+"build:dev" = "cd proxy-mago-base && find app public bin -name '*.php' -print0 | xargs -0 -n1 php -l"
