@@ -61,6 +61,9 @@ $routes = LbRouter::routes(200);
 </header>
 
 <main class="grid">
+    <section class="card full">
+        <div id="lbfresh" class="alert">Verificando frescor da telemetria dos LBs…</div>
+    </section>
     <?php if ($flash): ?><section class="card full"><div class="alert success"><?php echo lh($flash); ?></div></section><?php endif; ?>
     <?php if (!$sshReady): ?>
         <section class="card full"><div class="alert"><?php echo lh(LbSsh::missingHint()); ?></div></section>
