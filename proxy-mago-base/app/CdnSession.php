@@ -20,6 +20,8 @@ final class CdnSession
     public const UPTIME_RESUME_GRACE = [
         'movie'  => 1800,
         'series' => 1800,
+        'live'   => 120,
+        'hls'    => 120,
         'other'  => 600,
     ];
 
@@ -60,14 +62,27 @@ final class CdnSession
         END)';
     }
 
+    /**
+     * Tolerância de RETOMADA do uptime.
+     *
+     * Pausa curta (buffer, troca de faixa, tela bloqueada, reconexão de Wi-Fi)
+     * não pode zerar o uptime: o painel passava a mostrar "assistindo há 4s"
+     * para quem estava no mesmo filme há duas horas. A janela vale por TIPO de
+     * consumo, com ou sem `direct source` — antes só sessão direct tinha
+     * tolerância, então VOD normal resetava a cada pausa acima do idle.
+     */
     private static function resumeGraceSql(string $table = 'cdn_sessions'): string
     {
         return '(CASE
-            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'movie\'
+            WHEN ' . $table . '.session_kind = \'movie\'
                 THEN ' . self::UPTIME_RESUME_GRACE['movie'] . '
-            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'series\'
+            WHEN ' . $table . '.session_kind = \'series\'
                 THEN ' . self::UPTIME_RESUME_GRACE['series'] . '
-            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'other\'
+            WHEN ' . $table . '.session_kind = \'live\'
+                THEN ' . self::UPTIME_RESUME_GRACE['live'] . '
+            WHEN ' . $table . '.session_kind = \'hls\'
+                THEN ' . self::UPTIME_RESUME_GRACE['hls'] . '
+            WHEN ' . $table . '.session_kind = \'other\'
                 THEN ' . self::UPTIME_RESUME_GRACE['other'] . '
             ELSE 0
         END)';
