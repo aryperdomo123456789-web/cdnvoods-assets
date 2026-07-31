@@ -707,27 +707,11 @@ final class RestreamRuntime
     /** @return array<string,int> */
     public static function latestMetrics(array $metrics): array
     {
-        $metrics = array_values(array_unique(array_filter(array_map('strval', $metrics))));
-        if ($metrics === []) {
-            return [];
-        }
-
-        $placeholders = implode(',', array_fill(0, count($metrics), '?'));
-        $sql = 'SELECT metric, value
-                  FROM cdn_metrics
-                 WHERE metric IN (' . $placeholders . ')
-                  ORDER BY metric ASC, ts_epoch ASC';
-        $st = Database::pdo()->prepare($sql);
-        $st->execute($metrics);
-        $out = array_fill_keys($metrics, 0);
-        // Ordenado por ts crescente: a última linha lida de cada métrica é a
-        // mais recente. Antes usávamos subquery correlacionada sem alias no
-        // FROM interno, e o SQLite ligava `cdn_metrics.metric` à tabela INTERNA
-        // -> o filtro virava MAX(ts_epoch) GLOBAL. Em produção, onde outro job
-        // grava métrica mais nova no mesmo segundo seguinte, a linha certa
-        // simplesmente desaparecia do resultado.
-        foreach ($st->fetchAll() as $row) {
-            $out[(string) $row['metric']] = (int) $row['value'];
+        $aged = self::latestMetricsAged($metrics);
+        $out = [];
+        foreach ($metrics as $metric) {
+            $key = (string) $metric;
+            $out[$key] = (int) ($aged[$key]['value'] ?? 0);
         }
         return $out;
     }
@@ -743,18 +727,26 @@ final class RestreamRuntime
         if ($metrics === []) {
             return [];
         }
-        $placeholders = implode(',', array_fill(0, count($metrics), '?'));
+        // Uma busca indexada por métrica. A implementação anterior ordenava e
+        // carregava TODAS as amostras das últimas 24h para então manter a última
+        // em PHP. Na base grande da VPS isso fazia kpisFresh() varrer milhares de
+        // linhas repetidamente e podia ultrapassar o timeout do processo.
         $st = Database::pdo()->prepare(
-            'SELECT metric, value, ts_epoch
+            'SELECT value, ts_epoch
                FROM cdn_metrics
-              WHERE metric IN (' . $placeholders . ')
-              ORDER BY metric ASC, ts_epoch ASC'
+              WHERE metric = :metric
+              ORDER BY ts_epoch DESC, id DESC
+              LIMIT 1'
         );
-        $st->execute($metrics);
         $now = time();
         $out = [];
-        foreach ($st->fetchAll() as $row) {
-            $out[(string) $row['metric']] = [
+        foreach ($metrics as $metric) {
+            $st->execute([':metric' => $metric]);
+            $row = $st->fetch();
+            if ($row === false) {
+                continue;
+            }
+            $out[$metric] = [
                 'value' => (int) $row['value'],
                 'age' => max(0, $now - (int) $row['ts_epoch']),
             ];
@@ -846,9 +838,7 @@ final class RestreamRuntime
         $now = time();
         $pdo = Database::pdo();
         $jobsLateNow = (int) $pdo->query(self::jobsLateCountSql($now))->fetchColumn();
-        $divOperational = Divergence::countersOperational();
-        $divAll = Divergence::counters();
-        $metrics = self::latestMetrics([
+        $agedMetrics = self::latestMetricsAged([
             'connections_active',
             'users_active',
             'fetch_active',
@@ -869,15 +859,28 @@ final class RestreamRuntime
             'direct_mismatch',
             'direct_parse_errors',
         ]);
+        $metrics = [];
+        foreach ($agedMetrics as $metric => $sample) {
+            $metrics[$metric] = (int) $sample['value'];
+        }
         $active = (int) ($metrics['connections_active'] ?? 0);
         $usersActive = (int) ($metrics['users_active'] ?? 0);
         $fetchNow = (int) ($metrics['fetch_active'] ?? 0);
         $directNow = (int) ($metrics['direct_active'] ?? 0);
         $liveKeys = ['connections_active', 'users_active', 'fetch_active', 'direct_active'];
-        $liveFresh = self::metricsIfFresh($liveKeys);
-        // MESMA fonte que decide fresco/stale decide a idade publicada, senão
-        // o painel mostra "fresco" com idade de outra métrica (ou -1).
-        $rollupAge = self::rollupAgeSeconds($liveKeys);
+        $liveFresh = [];
+        $rollupAge = 0;
+        foreach ($liveKeys as $metric) {
+            if (!isset($agedMetrics[$metric]) || (int) $agedMetrics[$metric]['age'] > self::ROLLUP_MAX_AGE) {
+                $liveFresh = null;
+                $rollupAge = isset($agedMetrics[$metric])
+                    ? max($rollupAge, (int) $agedMetrics[$metric]['age'])
+                    : self::ROLLUP_MAX_AGE * 10;
+                break;
+            }
+            $liveFresh[$metric] = (int) $agedMetrics[$metric]['value'];
+            $rollupAge = max($rollupAge, (int) $agedMetrics[$metric]['age']);
+        }
         $rollupStale = $liveFresh === null || $rollupAge > self::ROLLUP_MAX_AGE;
 
         // Recontamos SÓ quando o rollup está velho/ausente (não quando ele
@@ -950,12 +953,22 @@ final class RestreamRuntime
             'rollup_stale' => $rollupStale,
             // O painel ao vivo precisa refletir o que exige ação agora, não a
             // massa informativa do catálogo de direct source.
-            'divergences' => $divOperational,
-            'divergences_operational' => $divOperational,
+            // O painel consome o snapshot do job. Recontar cdn_divergences em
+            // cada polling duplicava trabalho e travava em bases históricas.
+            'divergences' => [
+                'critical' => (int) ($metrics['divergences_critical'] ?? 0),
+                'warn' => (int) ($metrics['divergences_warn'] ?? 0),
+                'info' => (int) ($metrics['divergences_info'] ?? 0),
+            ],
+            'divergences_operational' => [
+                'critical' => (int) ($metrics['divergences_critical'] ?? 0),
+                'warn' => (int) ($metrics['divergences_warn'] ?? 0),
+                'info' => (int) ($metrics['divergences_info'] ?? 0),
+            ],
             'divergences_catalog_noise' => [
-                'critical' => max(0, (int) ($divAll['critical'] ?? 0) - (int) ($divOperational['critical'] ?? 0)),
-                'warn' => max(0, (int) ($divAll['warn'] ?? 0) - (int) ($divOperational['warn'] ?? 0)),
-                'info' => max(0, (int) ($divAll['info'] ?? 0) - (int) ($divOperational['info'] ?? 0)),
+                'critical' => 0,
+                'warn' => 0,
+                'info' => 0,
             ],
             'limit_mode' => Divergence::mode(),
         ];

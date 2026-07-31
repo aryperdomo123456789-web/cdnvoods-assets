@@ -18,7 +18,23 @@ validacao da VPS `45.140.192.237`:
 - Correcao: leitura ordenada por `metric, ts_epoch` (ultima linha por metrica),
   idade sempre inteira `>= 0`, e `rollup_stale` + `rollup_age_s` presentes nos
   DOIS caminhos (fresco e degradado).
-- Status: fechado. Provado por `bin/smoke-runtime-live.sh` (15/15).
+- Status funcional do contrato: corrigido no código. A validação na VPS segue
+  PENDENTE porque a leitura de KPI ainda excedeu o timeout no último rerun.
+
+### Gargalos encontrados depois da correção do contrato
+
+- `latestMetricsAged()` buscava todas as amostras de cada métrica, ordenava o
+  histórico inteiro e só então descartava em PHP tudo menos a última linha. Na
+  retenção de 24h da VPS, `kpisFresh()` repetia essa varredura três vezes para
+  valor, frescor e idade. Agora faz uma busca `ORDER BY ts_epoch DESC LIMIT 1`
+  por métrica, coberta por `idx_metrics_key(metric, ts_epoch)`, e valor + idade +
+  stale são derivados do mesmo snapshot em memória.
+- `kpisFresh()` também recontava `cdn_divergences` duas vezes apesar de o job de
+  rollup já publicar os contadores. O polling agora consome o snapshot do rollup.
+- `JobRunner::states()` não era uma leitura: chamava `recoverStaleRunning()`, que
+  executava `UPDATE job_state` e podia esperar os 30s de `busy_timeout` atrás de
+  qualquer escritor. `states()` agora é read-only e apenas normaliza stale na
+  resposta; a recuperação persistente foi movida para `bin/jobs-run.php`.
 
 ## 2. Limitacao operacional — `database is locked`
 
@@ -127,7 +143,7 @@ Criterio de aceite: `smoke-runtime-live` isolado 15/15, `bin/smoke-all.sh` com
 - Ambiente de desenvolvimento (sandbox, mesmo codigo): `bin/smoke-all.sh` =>
   0 falhas / 0 suites com lock; `smoke-runtime-live` isolado 15/15; fresh 8/8,
   lb 5/5, ip-lock 22/22, limit 12/12, uptime 14/14, direct-health 9/9.
-- Ambiente de PRODUCAO (`45.140.192.237`): PENDENTE de rerun por quem tem
+- Ambiente de PRODUCAO (`45.140.192.237`): PENDENTE de novo rerun por quem tem
   acesso ao host. Nao ha aqui prova da VPS, e este documento nao declara
   "producao validada" sem ela.
 
