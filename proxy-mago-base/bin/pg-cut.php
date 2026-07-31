@@ -35,6 +35,7 @@ foreach (array_slice($argv, 1) as $arg) {
 }
 $fresh = isset($argvFlags['fresh']);
 $dryRun = isset($argvFlags['dry-run']);
+$allowDrift = isset($argvFlags['allow-drift']);
 $chunk = max(50, (int) ($argvFlags['chunk'] ?? 500));
 $only = isset($argvFlags['tables']) && $argvFlags['tables'] !== '1'
     ? array_filter(array_map('trim', explode(',', (string) $argvFlags['tables'])))
@@ -134,13 +135,27 @@ foreach ($tables as $table) {
     $droppedDst = array_values(array_diff($dstCols, $srcCols));
     $srcRows = $count($src, $table);
 
+    if ($droppedSrc !== []) {
+        // Coluna que existe na origem e nao existe no destino = dado que o
+        // corte REAL perderia em silencio. Isso e falha, nao aviso.
+        printf(
+            "  [%s] %-22s colunas ausentes no destino: %s\n",
+            $allowDrift ? 'warn' : 'FAIL',
+            $table,
+            implode(',', $droppedSrc)
+        );
+        if (!$allowDrift) {
+            $fail++;
+            continue;
+        }
+    }
+
     if ($dryRun) {
         printf(
-            "  [plan] %-22s linhas=%-8d colunas=%d%s\n",
+            "  [plan] %-22s linhas=%-8d colunas=%d\n",
             $table,
             $srcRows,
-            count($cols),
-            $droppedSrc !== [] ? ' | so-na-origem: ' . implode(',', $droppedSrc) : ''
+            count($cols)
         );
         $report[$table] = ['src' => $srcRows, 'dst' => $count($dst, $table), 'ms' => 0];
         continue;
@@ -209,13 +224,12 @@ foreach ($tables as $table) {
 
     $parity = $fresh ? ($dstRows === $srcRows) : ($dstRows >= $srcRows);
     printf(
-        "  [%s] %-22s origem=%-8d destino=%-8d %5dms%s\n",
+        "  [%s] %-22s origem=%-8d destino=%-8d %5dms\n",
         $parity ? ' ok ' : 'FAIL',
         $table,
         $srcRows,
         $dstRows,
-        $ms,
-        $droppedSrc !== [] ? ' | so-na-origem: ' . implode(',', $droppedSrc) : ''
+        $ms
     );
     if (!$parity) {
         $fail++;
