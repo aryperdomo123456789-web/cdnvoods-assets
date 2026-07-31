@@ -10,6 +10,7 @@
  *   - o estouro fica visível no painel (divergência `above_limit`)
  */
 require __DIR__ . '/../app/bootstrap-cli.php';
+require __DIR__ . '/lib/smoke-sessions.php';
 
 $ok = 0; $fail = 0;
 function check(string $label, bool $cond): void
@@ -26,6 +27,11 @@ $pdo = Database::pdo();
 $prevMode = SettingsRepository::get('limit_mode', 'alert');
 $prevTol = SettingsRepository::get('limit_tolerance_seconds', 45);
 $prevLoopback = (string) SettingsRepository::get('lab_count_loopback', '');
+
+// Pré-condição: sem coleta de sessão ligada, touch() nao grava nada e o smoke
+// falharia por ambiente, não por regressão de limite.
+$restoreSessions = smoke_sessions_force_enabled();
+check('pré-condição: coleta de sessões ligada', CdnSession::enabled());
 
 $cleanup = static function () use ($pdo, $user, $prevMode, $prevTol, $prevLoopback): void {
     $pdo->prepare('DELETE FROM xui_users_cache WHERE username = :u')->execute([':u' => $user]);
@@ -105,4 +111,5 @@ check('max_connections=0 => sem bloqueio', !Divergence::shouldBlock($user, 'live
 
 $cleanup();
 printf("\nresultado: %d ok / %d falhas\n", $ok, $fail);
+$restoreSessions();
 exit($fail === 0 ? 0 : 1);

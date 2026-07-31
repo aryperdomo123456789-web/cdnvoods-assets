@@ -10,6 +10,7 @@
  *   - direct source longo mantém o uptime desde o primeiro redirect
  */
 require __DIR__ . '/../app/bootstrap-cli.php';
+require __DIR__ . '/lib/smoke-sessions.php';
 
 $ok = 0; $fail = 0;
 function check(string $label, bool $cond): void
@@ -21,6 +22,9 @@ function check(string $label, bool $cond): void
 
 $user = 'smoke_uptime_user';
 $pdo = Database::pdo();
+// Pré-condição: coleta de sessões ligada só durante o teste.
+$restoreSessions = smoke_sessions_force_enabled();
+check('pré-condição: coleta de sessões ligada', CdnSession::enabled());
 $clean = static function () use ($pdo, $user): void {
     $pdo->prepare('DELETE FROM cdn_sessions WHERE username = :u')->execute([':u' => $user]);
 };
@@ -104,4 +108,5 @@ check('uptime reflete o tempo real de filme', (time() - (int) $r['uptime_start_e
 
 $clean();
 printf("\nresultado: %d ok / %d falhas\n", $ok, $fail);
+$restoreSessions();
 exit($fail === 0 ? 0 : 1);
