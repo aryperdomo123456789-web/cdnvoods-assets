@@ -100,8 +100,6 @@ final class JobRunner
         $interval = (int) (self::CATALOG[$jobName][1] ?? 60);
         $runId = $jobName . '-' . bin2hex(random_bytes(6));
         $start = microtime(true);
-        $pdo = Database::pdo();
-
         // LOCK de execução: um job nunca roda duas vezes ao mesmo tempo.
         $lock = self::acquireLock($jobName);
         if ($lock === null) {
@@ -110,9 +108,26 @@ final class JobRunner
                     'error' => 'já em execução', 'duration_ms' => 0, 'run_id' => ''];
         }
 
+        // SQLite só admite um escritor por vez. O lock por nome acima impede
+        // apenas duas cópias do MESMO job; perfis fast/heavy ainda podiam
+        // executar jobs diferentes em paralelo e disputar o arquivo inteiro.
+        // Este mutex serializa oficialmente todos os jobs escritores, inclusive
+        // invocações manuais. Tráfego HTTP continua independente e protegido
+        // pelo busy_timeout/retry; PostgreSQL segue sendo a solução definitiva.
+        $writerLock = self::acquireWriterLock();
+        if ($writerLock === null) {
+            self::releaseLock($lock);
+            self::bumpSkipped($jobName, 'writer-lock');
+            return ['status' => 'locked', 'processed' => 0, 'failed' => 0,
+                    'error' => 'fila global de escrita indisponível', 'duration_ms' => 0, 'run_id' => ''];
+        }
+
+        $pdo = Database::pdo();
+
         // DISJUNTOR: circuito aberto = não martela o SQLite nem a origem.
         $circuit = self::circuit($jobName);
         if ($circuit['open'] && $trigger === 'cron') {
+            self::releaseLock($writerLock);
             self::releaseLock($lock);
             self::bumpSkipped($jobName, 'circuit');
             return ['status' => 'circuit_open', 'processed' => 0, 'failed' => 0,
@@ -160,6 +175,9 @@ final class JobRunner
             $error = substr($e->getMessage(), 0, 400);
             $stats['failed'] = max(1, (int) $stats['failed']);
             self::closeStep('error', $error);
+            if (DbLockDiag::isLockError($e)) {
+                DbLockDiag::note('(job)', 'run', $jobName, $e->getMessage(), 1, true);
+            }
         }
 
         $duration = (int) round((microtime(true) - $start) * 1000);
@@ -228,6 +246,7 @@ final class JobRunner
             'job_state.close'
         );
 
+        self::releaseLock($writerLock);
         self::releaseLock($lock);
         self::$currentRunId = '';
         self::$currentJob = '';
@@ -321,6 +340,40 @@ final class JobRunner
         }
         ftruncate($fh, 0);
         fwrite($fh, (string) getmypid());
+        return $fh;
+    }
+
+    /**
+     * Mutex global de jobs que escrevem no SQLite.
+     *
+     * É bloqueante de propósito: um job devido entra na fila em vez de ser
+     * descartado enquanto outro perfil termina sua transação. No PostgreSQL o
+     * mutex não é necessário, pois o MVCC resolve a concorrência de escritores.
+     *
+     * @return resource|null
+     */
+    private static function acquireWriterLock()
+    {
+        if (!Database::isSqlite()) {
+            return fopen('php://temp', 'w+');
+        }
+        $dir = dirname(__DIR__) . '/storage/cache';
+        if (!is_dir($dir)) { @mkdir($dir, 0775, true); }
+        $path = $dir . '/jobs-writer.lock';
+        $fh = @fopen($path, 'c+');
+        if ($fh === false && is_file($path) && !is_writable($path)) {
+            @unlink($path);
+            $fh = @fopen($path, 'c+');
+        }
+        if ($fh === false) { return null; }
+        @chmod($path, 0664);
+        if (!flock($fh, LOCK_EX)) {
+            fclose($fh);
+            return null;
+        }
+        ftruncate($fh, 0);
+        fwrite($fh, self::$currentJob . ':' . (string) getmypid());
+        fflush($fh);
         return $fh;
     }
 

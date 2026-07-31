@@ -53,6 +53,18 @@ validacao da VPS `45.140.192.237`:
 | `bin/smoke-all.sh` | bateria OFICIAL, serial, um smoke por vez; falha se qualquer log tiver lock |
 | `app/DbLockDiag.php` | instrumentacao: qual TABELA, qual OPERACAO, qual tag e foto dos fluxos concorrentes (WAL/shm, locks de job, processos PHP) |
 | `bin/smoke-runtime-live.php` | toda escrita passa por `DbLockDiag::guard()` + checagem final "nenhum lock durante o smoke" |
+| `app/JobRunner.php` | mutex global `jobs-writer.lock`: serializa jobs de perfis fast/heavy e execuções manuais; lock residual ganha diagnóstico por job |
+
+### Fechamento adicional dos escritores internos
+
+O lock individual `job-<nome>.lock` impedia somente duas cópias do mesmo job.
+Perfis `fast` e `heavy`, chamadas manuais e jobs diferentes ainda podiam rodar
+simultaneamente; transações grandes de sync XUI/direct disputavam o escritor
+único do SQLite com consolidação e rollups. Agora todo job passa pelo mutex
+global bloqueante `storage/cache/jobs-writer.lock`: jobs entram em fila, não são
+descartados, e qualquer lock residual registra o nome do job e os fluxos ativos.
+Isso reduz colisões entre jobs, mas não serializa clientes HTTP e não altera o
+requisito de PostgreSQL/Redis para a trilha quente em escala profissional.
 
 Se o lock voltar a aparecer mesmo isolado, o log agora diz, por exemplo:
 
