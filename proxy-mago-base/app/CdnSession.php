@@ -37,6 +37,17 @@ final class CdnSession
     ];
 
     /**
+     * Teto de vida de um request "em voo" (in_flight).
+     *
+     * `active_requests > 0` mantinha a sessão viva mesmo depois de o request
+     * morrer sem `record()` (cliente derrubou a conexão, worker do FPM foi
+     * morto, timeout de rede). Resultado: contador inflado por horas e
+     * sessão fantasma piscando no painel. Passado este teto sem NENHUM
+     * heartbeat, o in_flight deixa de contar e o sweep o zera.
+     */
+    public const IN_FLIGHT_MAX = 900;
+
+    /**
      * Janela expandida para consumo DIRECT de VOD.
      *
      * Em IBO Player / XCIPTV um filme/série pode virar um único request longo
@@ -98,7 +109,8 @@ final class CdnSession
         return '(' . $table . '.status = \'active\')
             AND ' . $table . '.last_seen_epoch >= ' . $floor . '
             AND (
-                ' . $table . '.active_requests > 0
+                (' . $table . '.active_requests > 0
+                    AND ' . $table . '.last_seen_epoch >= ' . ($now - self::IN_FLIGHT_MAX) . ')
                 OR ' . self::effectiveExpirySql($table) . ' >= ' . $now . '
             )';
     }
@@ -204,9 +216,10 @@ final class CdnSession
                    (session_key, username, credential_fingerprint, client_ip, user_agent, public_host,
                     session_kind, last_route_kind, stream_id, started_at, started_epoch, uptime_start_epoch,
                     last_seen_at, last_seen_epoch, idle_timeout, status, requests, last_request_id,
-                    direct_source, direct_mode, direct_host_db, direct_host_effective, direct_first_epoch, direct_last_epoch)
+                    direct_source, direct_mode, direct_host_db, direct_host_effective, direct_first_epoch, direct_last_epoch,
+                    active_requests, last_open_epoch)
                  VALUES (:k,:u,:f,:ip,:ua,:h,:kind,:rk,:sid,:sa,:se,:use,:la,:le,:idle,\'active\',1,:rid,
-                         :ds,:dm,:hdb,:heff,:dfe,:dle)
+                         :ds,:dm,:hdb,:heff,:dfe,:dle,1,:le2)
                  ON CONFLICT(session_key) DO UPDATE SET
                    last_seen_at=excluded.last_seen_at,
                    last_seen_epoch=excluded.last_seen_epoch,
@@ -274,6 +287,7 @@ final class CdnSession
                 ':heff' => $directHostDb,
                 ':dfe' => $directFlag ? $now : 0,
                 ':dle' => $directFlag ? $now : 0,
+                ':le2' => $now,
             ]);
         }, 'cdnsession.touch');
         if ($ok) {
@@ -514,6 +528,24 @@ final class CdnSession
         $now = time();
         JobRunner::step('encerrar_ociosas');
 
+        // in_flight preso: request morreu sem record() (cliente cortou, worker
+        // do FPM morreu). Sem isto a sessão contava viva por horas e o painel
+        // via conexão "sumindo e voltando" a cada tick.
+        JobRunner::step('soltar_in_flight');
+        $inFlight = 0;
+        Database::write(static function (PDO $pdo) use ($now, &$inFlight): void {
+            $st = $pdo->prepare(
+                'UPDATE cdn_sessions
+                    SET active_requests = 0,
+                        last_close_epoch = CASE WHEN last_close_epoch > 0 THEN last_close_epoch ELSE :now END
+                  WHERE status = \'active\'
+                    AND active_requests > 0
+                    AND last_seen_epoch < :cut'
+            );
+            $st->execute([':now' => $now, ':cut' => $now - self::IN_FLIGHT_MAX]);
+            $inFlight = $st->rowCount();
+        }, 'cdnsession.release_in_flight', 2);
+
         Database::run(
             'UPDATE cdn_sessions
                 SET idle_timeout = CASE
@@ -560,7 +592,11 @@ final class CdnSession
         )->fetchColumn();
 
         $stats['processed'] += $closed + $active;
-        $stats['details'] = ['closed' => $closed, 'active' => $active];
+        $stats['details'] = [
+            'closed' => $closed,
+            'active' => $active,
+            'in_flight_released' => $inFlight,
+        ];
     }
 
     /**

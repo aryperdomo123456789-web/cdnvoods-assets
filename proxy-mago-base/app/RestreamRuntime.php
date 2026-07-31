@@ -12,6 +12,8 @@
 final class RestreamRuntime
 {
     public const ACTIVE_WINDOW = 90;   // segundos para considerar "ao vivo"
+    /** Idade máxima aceitável do rollup leve antes de recontar (job roda a 30s). */
+    public const ROLLUP_MAX_AGE = 90;
 
     private static function jobsLateCountSql(int $now): string
     {
@@ -586,6 +588,17 @@ final class RestreamRuntime
             'SELECT COUNT(*) FROM direct_source_hops WHERE ts_epoch >= ' . ($now - 3600) . ' AND outcome <> \'followed\''
         )->fetchColumn();
         $div = Divergence::counters();
+        // Estes dois iam no caminho do painel (2 COUNT por tick). Agora o
+        // resumo lê do rollup e só reconta se o rollup estiver velho.
+        $runtimeActive = (int) $pdo->query(
+            'SELECT COUNT(*) FROM proxy_user_runtime
+              WHERE last_activity_epoch >= ' . ($now - self::ACTIVE_WINDOW) . '
+                AND active_connections_now > 0'
+        )->fetchColumn();
+        $overLimitNow = (int) $pdo->query(
+            'SELECT COUNT(*) FROM proxy_user_runtime
+              WHERE max_connections > 0 AND active_connections_now > max_connections'
+        )->fetchColumn();
         $ins = $pdo->prepare('INSERT INTO cdn_metrics (metric, value, ts_epoch) VALUES (:m,:v,:t)');
         // KPIs específicos de direct source: catálogo do XUI x consumo real.
         $dc = DirectCatalog::summary();
@@ -609,6 +622,8 @@ final class RestreamRuntime
             'direct_runtime_only' => (int) $dc['runtime_only'],
             'direct_mismatch' => (int) $dc['mismatch'],
             'direct_parse_errors' => (int) $dc['parse_errors'],
+            'users_runtime_active' => $runtimeActive,
+            'over_limit_now' => $overLimitNow,
         ];
         foreach ($metrics as $m => $v) {
             $ins->execute([':m' => $m, ':v' => $v, ':t' => $now]);
@@ -714,6 +729,69 @@ final class RestreamRuntime
     }
 
     /**
+     * Idade do rollup por métrica.
+     *
+     * @return array<string,array{value:int,age:int}>
+     */
+    public static function latestMetricsAged(array $metrics): array
+    {
+        $metrics = array_values(array_unique(array_filter(array_map('strval', $metrics))));
+        if ($metrics === []) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($metrics), '?'));
+        $st = Database::pdo()->prepare(
+            'SELECT metric, value, ts_epoch
+               FROM cdn_metrics
+              WHERE metric IN (' . $placeholders . ')
+                AND ts_epoch = (
+                     SELECT MAX(ts_epoch) FROM cdn_metrics c2 WHERE c2.metric = cdn_metrics.metric
+                )'
+        );
+        $st->execute($metrics);
+        $now = time();
+        $out = [];
+        foreach ($st->fetchAll() as $row) {
+            $out[(string) $row['metric']] = [
+                'value' => (int) $row['value'],
+                'age' => max(0, $now - (int) $row['ts_epoch']),
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * Rollup só vale se for RECENTE.
+     *
+     * O painel oscilava porque a leitura caía para recontagem apenas quando o
+     * rollup marcava zero; rollup atrasado com número velho passava como se
+     * fosse ao vivo. Agora: métrica ausente ou velha => null, e quem chamou
+     * decide (recontar uma vez, dentro do cache de 5s).
+     *
+     * @return array<string,int>|null
+     */
+    public static function metricsIfFresh(array $metrics, int $maxAge = self::ROLLUP_MAX_AGE): ?array
+    {
+        $aged = self::latestMetricsAged($metrics);
+        $out = [];
+        foreach ($metrics as $m) {
+            $m = (string) $m;
+            if (!isset($aged[$m]) || $aged[$m]['age'] > $maxAge) {
+                return null;
+            }
+            $out[$m] = $aged[$m]['value'];
+        }
+        return $out;
+    }
+
+    /** Idade do rollup leve, para o painel avisar modo degradado. */
+    public static function rollupAgeSeconds(): int
+    {
+        $aged = self::latestMetricsAged(['connections_active']);
+        return isset($aged['connections_active']) ? (int) $aged['connections_active']['age'] : -1;
+    }
+
+    /**
      * Saúde rápida do cérebro para polling do painel.
      *
      * Não pode chamar kpisFresh() completo porque isso reabre contagens pesadas.
@@ -778,8 +856,14 @@ final class RestreamRuntime
         $usersActive = (int) ($metrics['users_active'] ?? 0);
         $fetchNow = (int) ($metrics['fetch_active'] ?? 0);
         $directNow = (int) ($metrics['direct_active'] ?? 0);
+        $liveKeys = ['connections_active', 'users_active', 'fetch_active', 'direct_active'];
+        $liveFresh = self::metricsIfFresh($liveKeys);
+        $rollupAge = self::rollupAgeSeconds();
 
-        if (($active === 0 && $usersActive === 0 && $fetchNow === 0) && Database::isSqlite()) {
+        // Recontamos SÓ quando o rollup está velho/ausente (não quando ele
+        // legitimamente marca zero). Isso mata a oscilação "0 -> 3 -> 0" e
+        // mantém a leitura ao vivo barata: 1 recontagem por 5s de cache.
+        if ($liveFresh === null) {
             $active = (int) $pdo->query(
                 'SELECT COUNT(*) FROM cdn_sessions
                   WHERE ' . CdnSession::activeWhereSql($now) . '
@@ -842,6 +926,8 @@ final class RestreamRuntime
             'swaps_1h' => (int) ($metrics['swaps_1h'] ?? 0),
             'match' => $byConf,
             'jobs_late' => $jobsLateNow,
+            'rollup_age_s' => $rollupAge,
+            'rollup_stale' => $liveFresh === null,
             // O painel ao vivo precisa refletir o que exige ação agora, não a
             // massa informativa do catálogo de direct source.
             'divergences' => $divOperational,
@@ -1010,12 +1096,23 @@ final class RestreamRuntime
             'errors_5m',
             'inconsistencies_1h',
         ]);
+        // Resumo depende do rollup leve; recontagem só em modo degradado.
+        $heavy = self::metricsIfFresh(['users_runtime_active', 'over_limit_now']);
+        if ($heavy === null) {
+            $heavy = [
+                'users_runtime_active' => (int) ($pdo->query(
+                    'SELECT COUNT(*) FROM proxy_user_runtime
+                      WHERE last_activity_epoch >= ' . $win . ' AND active_connections_now > 0'
+                )->fetchColumn() ?: 0),
+                'over_limit_now' => (int) ($pdo->query(
+                    'SELECT COUNT(*) FROM proxy_user_runtime
+                      WHERE max_connections > 0 AND active_connections_now > max_connections'
+                )->fetchColumn() ?: 0),
+            ];
+        }
         return [
             'generated_at' => date('c'),
-            'active_users' => max(
-                $kpis['users_now'],
-                (int) ($pdo->query('SELECT COUNT(*) FROM proxy_user_runtime WHERE last_activity_epoch >= ' . $win . ' AND active_connections_now > 0')->fetchColumn() ?: 0)
-            ),
+            'active_users' => max((int) $kpis['users_now'], (int) $heavy['users_runtime_active']),
             'active_sessions_xui' => (int) $pdo->query('SELECT COUNT(*) FROM xui_activity_now_cache')->fetchColumn(),
             'active_sessions_cdn' => $kpis['connections_now'],
             'kpis' => $kpis,
@@ -1023,7 +1120,7 @@ final class RestreamRuntime
             'requests_5m' => (int) ($summaryMetrics['requests_5m'] ?? 0),
             'bytes_5m' => (int) ($summaryMetrics['bytes_5m'] ?? 0),
             'errors_5m' => (int) ($summaryMetrics['errors_5m'] ?? 0),
-            'over_limit' => (int) $pdo->query('SELECT COUNT(*) FROM proxy_user_runtime WHERE max_connections > 0 AND active_connections_now > max_connections')->fetchColumn(),
+            'over_limit' => (int) $heavy['over_limit_now'],
             'inconsistencies_1h' => (int) ($summaryMetrics['inconsistencies_1h'] ?? 0),
             'sync_status' => (string) ($cfg['last_sync_status'] ?? 'never'),
             'sync_at' => (string) ($cfg['last_sync_at'] ?? ''),

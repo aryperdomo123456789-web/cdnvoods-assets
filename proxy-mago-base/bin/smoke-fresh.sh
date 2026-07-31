@@ -10,13 +10,17 @@
 #   4. micro-cache do lb-data (view=nodes) nao repete a leitura de telemetria
 set -uo pipefail
 BASE="$(cd "$(dirname "$0")/.." && pwd)"
-PHP="${PHP_BIN:-$(command -v php || echo php)}"
+# Sem php no PATH (ambiente de dev/nix) o smoke caia com "command not found"
+# e reportava falha falsa. Agora ha fallback explicito.
+if [ -n "${PHP_BIN:-}" ]; then PHP=("$PHP_BIN");
+elif command -v php >/dev/null 2>&1; then PHP=(php);
+else PHP=(nix run nixpkgs#php82 --); fi
 ok=0; fail=0
 pass() { printf '  [ok]   %s\n' "$1"; ok=$((ok+1)); }
 bad()  { printf '  [FAIL] %s\n' "$1"; fail=$((fail+1)); }
 say()  { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 export SMOKE_BASE="$BASE"
-run() { "$PHP" -r 'require getenv("SMOKE_BASE")."/app/bootstrap-cli.php"; eval(file_get_contents("php://stdin"));'; }
+run() { "${PHP[@]}" -r 'require getenv("SMOKE_BASE")."/app/bootstrap-cli.php"; eval(file_get_contents("php://stdin"));'; }
 
 say "1. meta das views"
 out=$(run <<'PHP'
@@ -77,7 +81,9 @@ $t1 = microtime(true);
 Cache::remember('lb-nodes-view', 3, $build);
 $warm = (microtime(true) - $t1) * 1000;
 printf("cold=%.2fms warm=%.2fms\n", $cold, $warm);
-echo ($warm <= $cold + 0.5 ? 'CACHE_OK' : 'CACHE_SLOW'), "\n";
+// Sem nó cadastrado o build custa ~0ms e o warm (leitura de arquivo) fica
+// "mais lento" — falso negativo. O que importa é o warm ser barato em absoluto.
+echo (($warm <= $cold + 0.5 || $warm < 3.0) ? 'CACHE_OK' : 'CACHE_SLOW'), "\n";
 PHP
 )
 echo "$out" | sed 's/^/    /'
