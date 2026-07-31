@@ -61,7 +61,9 @@ check('sessão fantasma não conta mais', $active() === 0);
 
 echo "\n== 3. sweep solta o in_flight preso\n";
 $stats = ['processed' => 0, 'details' => []];
-hot(static fn() => CdnSession::sweep($stats), 'cdn_sessions', 'sweep');
+// $stats sai por REFERENCIA: closure `static fn` copiava o array e o smoke
+// perdia o relatorio do sweep.
+hot(static function () use (&$stats) { CdnSession::sweep($stats); }, 'cdn_sessions', 'sweep');
 check('sweep reportou in_flight liberado', (int) ($stats['details']['in_flight_released'] ?? 0) >= 1);
 $r = $pdo->query("SELECT active_requests, status, close_reason FROM cdn_sessions WHERE session_key = '" . $key . "'")->fetch();
 check('active_requests zerado', $r === false || (int) $r['active_requests'] === 0);

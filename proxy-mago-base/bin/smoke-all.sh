@@ -43,7 +43,8 @@ for s in "${SUITES[@]}"; do
     echo "  [FAIL] $s (log: $out)"
     fails=$((fails+1))
   fi
-  if grep -qi 'database is locked' "$out"; then
+  # Padrao especifico: a linha de checagem do proprio smoke contem a frase.
+  if grep -qEi '\[db:lock\]|General error: 5 database is locked' "$out"; then
     echo "  [LOCK] $s registrou 'database is locked' — ver instrumentacao no log"
     locks=$((locks+1))
   fi
