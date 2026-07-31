@@ -843,8 +843,14 @@ final class RestreamRuntime
         $usersActive = (int) ($metrics['users_active'] ?? 0);
         $fetchNow = (int) ($metrics['fetch_active'] ?? 0);
         $directNow = (int) ($metrics['direct_active'] ?? 0);
+        $liveKeys = ['connections_active', 'users_active', 'fetch_active', 'direct_active'];
+        $liveFresh = self::metricsIfFresh($liveKeys);
+        $rollupAge = self::rollupAgeSeconds();
 
-        if (($active === 0 && $usersActive === 0 && $fetchNow === 0) && Database::isSqlite()) {
+        // Recontamos SÓ quando o rollup está velho/ausente (não quando ele
+        // legitimamente marca zero). Isso mata a oscilação "0 -> 3 -> 0" e
+        // mantém a leitura ao vivo barata: 1 recontagem por 5s de cache.
+        if ($liveFresh === null) {
             $active = (int) $pdo->query(
                 'SELECT COUNT(*) FROM cdn_sessions
                   WHERE ' . CdnSession::activeWhereSql($now) . '
@@ -907,6 +913,8 @@ final class RestreamRuntime
             'swaps_1h' => (int) ($metrics['swaps_1h'] ?? 0),
             'match' => $byConf,
             'jobs_late' => $jobsLateNow,
+            'rollup_age_s' => $rollupAge,
+            'rollup_stale' => $liveFresh === null,
             // O painel ao vivo precisa refletir o que exige ação agora, não a
             // massa informativa do catálogo de direct source.
             'divergences' => $divOperational,
