@@ -844,6 +844,172 @@ final class Database
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cdnsess_seen ON cdn_sessions(last_seen_epoch)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cdnsess_status ON cdn_sessions(status, last_seen_epoch)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cdnsess_direct ON cdn_sessions(direct_source, status)');
+
+        // S2-P0-4 — paridade da TRILHA QUENTE.
+        //
+        // Antes daqui o espelho Postgres só tinha 4 tabelas; métricas,
+        // divergência, limite, hops, timeline e jobs ficavam de fora e a
+        // migração morreria no primeiro rollup. Nada de `DEFAULT ""`
+        // (no Postgres aspas duplas são IDENTIFICADOR) nem AUTOINCREMENT.
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS cdn_metrics (
+                id BIGSERIAL PRIMARY KEY,
+                metric TEXT NOT NULL,
+                value BIGINT NOT NULL DEFAULT 0,
+                ts_epoch BIGINT NOT NULL DEFAULT 0
+            )"
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_metrics_key ON cdn_metrics(metric, ts_epoch)');
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS cdn_divergences (
+                id BIGSERIAL PRIMARY KEY,
+                username TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT 'count_mismatch',
+                severity TEXT NOT NULL DEFAULT 'warn',
+                cdn_count INTEGER NOT NULL DEFAULT 0,
+                xui_count INTEGER NOT NULL DEFAULT 0,
+                max_connections INTEGER NOT NULL DEFAULT 0,
+                probable_cause TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'open',
+                opened_at TEXT NOT NULL DEFAULT '',
+                opened_epoch BIGINT NOT NULL DEFAULT 0,
+                last_seen_epoch BIGINT NOT NULL DEFAULT 0,
+                occurrences BIGINT NOT NULL DEFAULT 1,
+                closed_epoch BIGINT NOT NULL DEFAULT 0,
+                stream_id BIGINT NOT NULL DEFAULT 0,
+                scope TEXT NOT NULL DEFAULT ''
+            )"
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_div_seen ON cdn_divergences(last_seen_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_div_user ON cdn_divergences(username, status)');
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS user_limit_state (
+                username TEXT PRIMARY KEY,
+                over_limit_since_epoch BIGINT NOT NULL DEFAULT 0,
+                updated_epoch BIGINT NOT NULL DEFAULT 0
+            )"
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_userlimit_updated ON user_limit_state(updated_epoch)');
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS direct_source_hops (
+                id BIGSERIAL PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                session_key TEXT NOT NULL DEFAULT '',
+                username TEXT NOT NULL DEFAULT '',
+                hop_no INTEGER NOT NULL DEFAULT 0,
+                from_host TEXT NOT NULL DEFAULT '',
+                to_host TEXT NOT NULL DEFAULT '',
+                off_origin INTEGER NOT NULL DEFAULT 0,
+                outcome TEXT NOT NULL DEFAULT 'followed',
+                status INTEGER NOT NULL DEFAULT 0,
+                ts TEXT NOT NULL DEFAULT '',
+                ts_epoch BIGINT NOT NULL DEFAULT 0
+            )"
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dsh_req ON direct_source_hops(request_id)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dsh_ts ON direct_source_hops(ts_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dsh_user ON direct_source_hops(username)');
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS cdn_audit_timeline (
+                session_key TEXT PRIMARY KEY,
+                username TEXT NOT NULL DEFAULT '',
+                credential_fingerprint TEXT NOT NULL DEFAULT '',
+                client_ip TEXT NOT NULL DEFAULT '',
+                user_agent TEXT NOT NULL DEFAULT '',
+                public_host TEXT NOT NULL DEFAULT '',
+                session_kind TEXT NOT NULL DEFAULT '',
+                stream_id BIGINT NOT NULL DEFAULT 0,
+                origin_id BIGINT NOT NULL DEFAULT 0,
+                lb_id BIGINT NOT NULL DEFAULT 0,
+                lb_target TEXT NOT NULL DEFAULT 'main',
+                lb_reason TEXT NOT NULL DEFAULT '',
+                direct_source INTEGER NOT NULL DEFAULT 0,
+                direct_host TEXT NOT NULL DEFAULT '',
+                first_request_id TEXT NOT NULL DEFAULT '',
+                last_request_id TEXT NOT NULL DEFAULT '',
+                last_path TEXT NOT NULL DEFAULT '',
+                last_status INTEGER NOT NULL DEFAULT 0,
+                last_reason TEXT NOT NULL DEFAULT '',
+                inconsistency TEXT NOT NULL DEFAULT '',
+                requests BIGINT NOT NULL DEFAULT 0,
+                errors BIGINT NOT NULL DEFAULT 0,
+                bytes BIGINT NOT NULL DEFAULT 0,
+                hops BIGINT NOT NULL DEFAULT 0,
+                started_epoch BIGINT NOT NULL DEFAULT 0,
+                last_epoch BIGINT NOT NULL DEFAULT 0
+            )"
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_tl_last ON cdn_audit_timeline(last_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_tl_user ON cdn_audit_timeline(username, last_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_tl_ip ON cdn_audit_timeline(client_ip, last_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_tl_host ON cdn_audit_timeline(public_host, last_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_tl_problem ON cdn_audit_timeline(inconsistency, last_epoch)');
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS job_runs (
+                id BIGSERIAL PRIMARY KEY,
+                job_name TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                purpose TEXT NOT NULL DEFAULT '',
+                trigger_source TEXT NOT NULL DEFAULT 'cron',
+                started_at TEXT NOT NULL,
+                started_epoch BIGINT NOT NULL DEFAULT 0,
+                finished_at TEXT NOT NULL DEFAULT '',
+                duration_ms BIGINT NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'running',
+                processed BIGINT NOT NULL DEFAULT 0,
+                failed BIGINT NOT NULL DEFAULT 0,
+                error TEXT NOT NULL DEFAULT '',
+                details TEXT NOT NULL DEFAULT ''
+            )"
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_jobruns_name ON job_runs(job_name, started_epoch)');
+        $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_jobruns_runid ON job_runs(run_id)');
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS job_state (
+                job_name TEXT PRIMARY KEY,
+                purpose TEXT NOT NULL DEFAULT '',
+                interval_seconds INTEGER NOT NULL DEFAULT 60,
+                last_run_at TEXT NOT NULL DEFAULT '',
+                last_run_epoch BIGINT NOT NULL DEFAULT 0,
+                last_status TEXT NOT NULL DEFAULT 'never',
+                last_duration_ms BIGINT NOT NULL DEFAULT 0,
+                last_processed BIGINT NOT NULL DEFAULT 0,
+                last_failed BIGINT NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT '',
+                next_run_epoch BIGINT NOT NULL DEFAULT 0,
+                total_runs BIGINT NOT NULL DEFAULT 0,
+                total_failures BIGINT NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT '',
+                running INTEGER NOT NULL DEFAULT 0,
+                running_since_epoch BIGINT NOT NULL DEFAULT 0,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                disabled_until_epoch BIGINT NOT NULL DEFAULT 0,
+                profile TEXT NOT NULL DEFAULT 'fast'
+            )"
+        );
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS job_step_history (
+                id BIGSERIAL PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                job_name TEXT NOT NULL,
+                seq INTEGER NOT NULL DEFAULT 0,
+                step TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'ok',
+                message TEXT NOT NULL DEFAULT '',
+                duration_ms BIGINT NOT NULL DEFAULT 0,
+                ts_epoch BIGINT NOT NULL DEFAULT 0
+            )"
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_jsh_run ON job_step_history(run_id, seq)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_jsh_job ON job_step_history(job_name, ts_epoch)');
     }
 
     /**
