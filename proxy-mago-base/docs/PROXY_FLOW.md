@@ -18,7 +18,7 @@ pelo main público oficial (`cdnvoods.vr766.com`).
 ## Fluxo de um request de playlist
 
 ```
-Player ──HTTPS──► Cloudflare ──► Nginx VPS ──► public/proxy.php
+Player ──HTTP/HTTPS──► Dominio publico ──► Nginx VPS ──► public/proxy.php
                                                     │
                                                     ├─ AccessGuard: alias público? origem ativa? token válido?
                                                     │
@@ -36,5 +36,5 @@ Player ──HTTPS──► Cloudflare ──► Nginx VPS ──► public/prox
 - O token público é opaco (32 hex) e vencível; um mesmo player recebe um novo a
   cada playlist emitida se não trouxer um explicitamente.
 - Rate limit por IP configurável (padrão 240 req/min).
-- CNAMEs extras devem apontar para o main oficial e ficar sempre atrás da
-  Cloudflare (proxy laranja ligado).
+- CNAMEs extras podem apontar para o main oficial ou ir por A direto para a VPS.
+- Operacao atual recomendada: DNS only / nuvem cinza.

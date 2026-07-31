@@ -3,6 +3,8 @@
 final class Database
 {
     private static ?PDO $pdo = null;
+    private static bool $migrated = false;
+    private static int $lockRetries = 0;
 
     public static function pdo(): PDO
     {
@@ -24,9 +26,122 @@ final class Database
 
         self::$pdo->exec('PRAGMA journal_mode = WAL');
         self::$pdo->exec('PRAGMA foreign_keys = ON');
+        self::$pdo->exec('PRAGMA synchronous = NORMAL');
+        // Fase 0 — estabilização do cérebro.
+        //
+        // O SQLite é UM arquivo servindo, ao mesmo tempo: tráfego ao vivo
+        // (cdn_sessions + proxy_request_events), 15 jobs internos, telemetria
+        // de LB e polling do painel. Sem folga de espera qualquer escritor
+        // levanta "database is locked" e o painel/stream perde trilha.
+        self::$pdo->exec('PRAGMA busy_timeout = 30000');
+        self::$pdo->exec('PRAGMA temp_store = MEMORY');
+        self::$pdo->exec('PRAGMA cache_size = -20000');       // ~20MB de page cache
+        self::$pdo->exec('PRAGMA wal_autocheckpoint = 512');  // checkpoint mais curto = WAL menor
+        self::$pdo->exec('PRAGMA mmap_size = 134217728');     // 128MB de leitura por mmap
 
-        self::migrate(self::$pdo);
+        // Performance: rodar as ~150 instruções DDL em TODA requisição custa caro
+        // (painel e, pior, cada request de stream). A versão do schema é derivada
+        // do próprio arquivo (mtime+size), então um deploy novo migra sozinho.
+        self::ensureSchema(self::$pdo);
         return self::$pdo;
+    }
+
+    /**
+     * Executa uma ESCRITA com retry e backoff quando o SQLite está travado.
+     *
+     * Só o caminho de escrita precisa disso: leitura em WAL não bloqueia. O
+     * callable recebe o PDO e pode fazer 1..N statements; ele PRECISA ser
+     * idempotente (UPSERT/UPDATE), porque pode ser repetido.
+     *
+     * Nunca lança para o chamador do stream: devolve false e loga.
+     *
+     * @param callable(PDO):void $fn
+     */
+    public static function write(callable $fn, string $tag = 'write', int $attempts = 5): bool
+    {
+        $pdo = self::pdo();
+        $delayUs = 25000; // 25ms, 50ms, 100ms, 200ms, 400ms
+        for ($i = 1; $i <= max(1, $attempts); $i++) {
+            try {
+                $fn($pdo);
+                if ($i > 1) {
+                    self::$lockRetries++;
+                }
+                return true;
+            } catch (Throwable $e) {
+                $msg = strtolower($e->getMessage());
+                $locked = str_contains($msg, 'locked') || str_contains($msg, 'busy');
+                if (!$locked || $i >= $attempts) {
+                    error_log('[db:' . $tag . '] ' . $e->getMessage());
+                    return false;
+                }
+                usleep($delayUs + random_int(0, 15000));
+                $delayUs = min($delayUs * 2, 400000);
+            }
+        }
+        return false;
+    }
+
+    /** Atalho: 1 statement preparado com retry. */
+    public static function run(string $sql, array $params = [], string $tag = 'run'): bool
+    {
+        return self::write(static function (PDO $pdo) use ($sql, $params): void {
+            $pdo->prepare($sql)->execute($params);
+        }, $tag);
+    }
+
+    /** Quantas escritas precisaram de retry neste processo (observabilidade). */
+    public static function lockRetries(): int
+    {
+        return self::$lockRetries;
+    }
+
+    /** Diagnóstico do arquivo SQLite para o painel de auditoria. */
+    public static function healthSnapshot(): array
+    {
+        $pdo = self::pdo();
+        $path = (string) Config::get('db_path');
+        $wal = $path . '-wal';
+        return [
+            'journal_mode' => (string) $pdo->query('PRAGMA journal_mode')->fetchColumn(),
+            'busy_timeout_ms' => (int) $pdo->query('PRAGMA busy_timeout')->fetchColumn(),
+            'db_bytes' => (int) @filesize($path),
+            'wal_bytes' => (int) @filesize($wal),
+            'lock_retries' => self::$lockRetries,
+            'schema_version' => (int) $pdo->query('PRAGMA user_version')->fetchColumn(),
+        ];
+    }
+
+    /** Assinatura do schema: muda sozinha quando este arquivo muda (deploy). */
+    private static function schemaVersion(): int
+    {
+        $sig = (string) @filemtime(__FILE__) . ':' . (string) @filesize(__FILE__);
+        return (int) (crc32($sig) & 0x7fffffff);
+    }
+
+    private static function ensureSchema(PDO $pdo): void
+    {
+        if (self::$migrated) {
+            return;
+        }
+        $want = self::schemaVersion();
+        $have = (int) $pdo->query('PRAGMA user_version')->fetchColumn();
+        if ($have === $want) {
+            self::$migrated = true;
+            return;
+        }
+        self::migrate($pdo);
+        $pdo->exec('PRAGMA user_version = ' . $want);
+        self::$migrated = true;
+    }
+
+    /** Força a migração (deploy/CLI), ignorando o cache de versão. */
+    public static function migrateNow(): void
+    {
+        $pdo = self::pdo();
+        self::migrate($pdo);
+        $pdo->exec('PRAGMA user_version = ' . self::schemaVersion());
+        self::$migrated = true;
     }
 
     private static function hasColumn(PDO $pdo, string $table, string $column): bool
@@ -38,6 +153,20 @@ final class Database
             }
         }
         return false;
+    }
+
+    private static function addColumnIfMissing(PDO $pdo, string $table, string $column, string $decl): void
+    {
+        if (self::hasColumn($pdo, $table, $column)) {
+            return;
+        }
+        try {
+            $pdo->exec('ALTER TABLE ' . $table . ' ADD COLUMN ' . $column . ' ' . $decl);
+        } catch (PDOException $e) {
+            if (!str_contains(strtolower($e->getMessage()), 'duplicate column name')) {
+                throw $e;
+            }
+        }
     }
 
     private static function migrate(PDO $pdo): void
@@ -86,6 +215,11 @@ final class Database
         if (!self::hasColumn($pdo, 'origins', 'host_header')) {
             $pdo->exec('ALTER TABLE origins ADD COLUMN host_header TEXT NOT NULL DEFAULT ""');
         }
+        // Hosts adicionais que pertencem à origem (main alternativo, CDN interna,
+        // subdomínios do XUI). Tudo aqui é sanitizado do corpo das respostas.
+        if (!self::hasColumn($pdo, 'origins', 'extra_hosts')) {
+            $pdo->exec('ALTER TABLE origins ADD COLUMN extra_hosts TEXT NOT NULL DEFAULT ""');
+        }
 
         // Aliases publicos (main + CNAMEs que resolvem via Cloudflare para a VPS).
         $pdo->exec(
@@ -100,6 +234,12 @@ final class Database
                 FOREIGN KEY (origin_id) REFERENCES origins(id) ON DELETE CASCADE
             )'
         );
+
+        // Fluxo XUI clássico: o assinante chega com username/password na query.
+        // require_token = 0 (padrão) libera esse fluxo; 1 mantém o modo token.
+        if (!self::hasColumn($pdo, 'aliases', 'require_token')) {
+            $pdo->exec('ALTER TABLE aliases ADD COLUMN require_token INTEGER NOT NULL DEFAULT 0');
+        }
 
         // Tokens efemeros que os players carregam.
         $pdo->exec(
@@ -142,6 +282,772 @@ final class Database
                 window_start INTEGER NOT NULL,
                 hits INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (client_ip, window_start)
+            )'
+        );
+
+        self::migrateRestream($pdo);
+    }
+
+    /**
+     * Fase Restreamento: espelho read-only do XUI + rastreabilidade total do
+     * proxy + auditoria de jobs internos. Tudo idempotente (CREATE IF NOT EXISTS).
+     */
+    private static function migrateRestream(PDO $pdo): void
+    {
+        // Conexão read-only com o MySQL do XUI (uma linha só, id = 1).
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS xui_sync_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                host TEXT NOT NULL DEFAULT "",
+                port INTEGER NOT NULL DEFAULT 3306,
+                database_name TEXT NOT NULL DEFAULT "xtream_iptvpro",
+                username TEXT NOT NULL DEFAULT "",
+                password TEXT NOT NULL DEFAULT "",
+                use_tls INTEGER NOT NULL DEFAULT 0,
+                sync_enabled INTEGER NOT NULL DEFAULT 0,
+                sync_interval_seconds INTEGER NOT NULL DEFAULT 5,
+                users_interval_seconds INTEGER NOT NULL DEFAULT 60,
+                streams_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                connect_timeout_seconds INTEGER NOT NULL DEFAULT 3,
+                read_timeout_seconds INTEGER NOT NULL DEFAULT 5,
+                last_sync_at TEXT NOT NULL DEFAULT "",
+                last_sync_status TEXT NOT NULL DEFAULT "never",
+                last_sync_error TEXT NOT NULL DEFAULT "",
+                updated_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+
+        // Espelho mínimo de users. NUNCA guardamos a senha em claro: só máscara
+        // + fingerprint sha256(username:password) para casar com o request.
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS xui_users_cache (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT NOT NULL,
+                password_masked TEXT NOT NULL DEFAULT "",
+                credential_fingerprint TEXT NOT NULL DEFAULT "",
+                max_connections INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                exp_date TEXT NOT NULL DEFAULT "",
+                is_trial INTEGER NOT NULL DEFAULT 0,
+                is_restreamer INTEGER NOT NULL DEFAULT 0,
+                allowed_ips TEXT NOT NULL DEFAULT "",
+                allowed_ua TEXT NOT NULL DEFAULT "",
+                synced_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_users_username ON xui_users_cache(username)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_users_fp ON xui_users_cache(credential_fingerprint)');
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS xui_streams_cache (
+                stream_id INTEGER PRIMARY KEY,
+                type TEXT NOT NULL DEFAULT "",
+                stream_display_name TEXT NOT NULL DEFAULT "",
+                category_id TEXT NOT NULL DEFAULT "",
+                target_container TEXT NOT NULL DEFAULT "",
+                synced_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS xui_activity_now_cache (
+                activity_id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL DEFAULT 0,
+                stream_id INTEGER NOT NULL DEFAULT 0,
+                server_id INTEGER NOT NULL DEFAULT 0,
+                user_agent TEXT NOT NULL DEFAULT "",
+                user_ip TEXT NOT NULL DEFAULT "",
+                container TEXT NOT NULL DEFAULT "",
+                date_start INTEGER NOT NULL DEFAULT 0,
+                date_end INTEGER NOT NULL DEFAULT 0,
+                hls_last_read INTEGER NOT NULL DEFAULT 0,
+                hls_end INTEGER NOT NULL DEFAULT 0,
+                synced_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_act_user ON xui_activity_now_cache(user_id)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_act_ip ON xui_activity_now_cache(user_ip)');
+
+        // Log estruturado por request público do proxy (sem senha em claro).
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS proxy_request_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                ts TEXT NOT NULL,
+                ts_epoch INTEGER NOT NULL DEFAULT 0,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                client_ip TEXT NOT NULL DEFAULT "",
+                public_host TEXT NOT NULL DEFAULT "",
+                method TEXT NOT NULL DEFAULT "GET",
+                path TEXT NOT NULL DEFAULT "",
+                query_masked TEXT NOT NULL DEFAULT "",
+                route_kind TEXT NOT NULL DEFAULT "other",
+                username TEXT NOT NULL DEFAULT "",
+                credential_fingerprint TEXT NOT NULL DEFAULT "",
+                stream_id INTEGER,
+                token_id INTEGER,
+                origin_id INTEGER,
+                status INTEGER NOT NULL DEFAULT 0,
+                bytes INTEGER NOT NULL DEFAULT 0,
+                user_agent TEXT NOT NULL DEFAULT "",
+                referer TEXT NOT NULL DEFAULT "",
+                reason TEXT NOT NULL DEFAULT "",
+                match_confidence TEXT NOT NULL DEFAULT "pending",
+                inconsistency TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_pre_reqid ON proxy_request_events(request_id)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_pre_ts ON proxy_request_events(ts_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_pre_user ON proxy_request_events(username)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_pre_ip ON proxy_request_events(client_ip)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_pre_host ON proxy_request_events(public_host)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_pre_kind ON proxy_request_events(route_kind)');
+
+        // Vínculo request público <-> sessão ativa do XUI.
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS proxy_session_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                activity_id INTEGER NOT NULL DEFAULT 0,
+                user_id INTEGER NOT NULL DEFAULT 0,
+                stream_id INTEGER NOT NULL DEFAULT 0,
+                matched_by TEXT NOT NULL DEFAULT "",
+                confidence TEXT NOT NULL DEFAULT "low",
+                matched_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_psl_req ON proxy_session_links(request_id, activity_id)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_psl_user ON proxy_session_links(user_id)');
+
+        // Leitura rápida do painel ao vivo (consolidada por job).
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS proxy_user_runtime (
+                username TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL DEFAULT 0,
+                public_host_last_seen TEXT NOT NULL DEFAULT "",
+                client_ip_last_seen TEXT NOT NULL DEFAULT "",
+                user_agent_last_seen TEXT NOT NULL DEFAULT "",
+                active_connections_now INTEGER NOT NULL DEFAULT 0,
+                max_connections INTEGER NOT NULL DEFAULT 0,
+                last_activity_at TEXT NOT NULL DEFAULT "",
+                last_activity_epoch INTEGER NOT NULL DEFAULT 0,
+                last_route_kind TEXT NOT NULL DEFAULT "",
+                last_stream_id INTEGER NOT NULL DEFAULT 0,
+                last_stream_name TEXT NOT NULL DEFAULT "",
+                requests_5m INTEGER NOT NULL DEFAULT 0,
+                bytes_5m INTEGER NOT NULL DEFAULT 0,
+                health_status TEXT NOT NULL DEFAULT "ok",
+                updated_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_pur_last ON proxy_user_runtime(last_activity_epoch)');
+
+        foreach ([
+            'cdn_connections_now' => 'INTEGER NOT NULL DEFAULT 0',
+            'xui_connections_now' => 'INTEGER NOT NULL DEFAULT 0',
+            'divergence' => 'INTEGER NOT NULL DEFAULT 0',
+            'count_source' => 'TEXT NOT NULL DEFAULT "cdn_local"',
+            'direct_sessions_now' => 'INTEGER NOT NULL DEFAULT 0',
+        ] as $col => $decl) {
+            self::addColumnIfMissing($pdo, 'proxy_user_runtime', $col, $decl);
+        }
+
+        // Auditoria de jobs internos: uma linha por execução.
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS job_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_name TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                purpose TEXT NOT NULL DEFAULT "",
+                trigger_source TEXT NOT NULL DEFAULT "cron",
+                started_at TEXT NOT NULL,
+                started_epoch INTEGER NOT NULL DEFAULT 0,
+                finished_at TEXT NOT NULL DEFAULT "",
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT "running",
+                processed INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0,
+                error TEXT NOT NULL DEFAULT "",
+                details TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_jobruns_name ON job_runs(job_name, started_epoch)');
+        $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_jobruns_runid ON job_runs(run_id)');
+
+        // Estado atual por job (última execução, próxima esperada).
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS job_state (
+                job_name TEXT PRIMARY KEY,
+                purpose TEXT NOT NULL DEFAULT "",
+                interval_seconds INTEGER NOT NULL DEFAULT 60,
+                last_run_at TEXT NOT NULL DEFAULT "",
+                last_run_epoch INTEGER NOT NULL DEFAULT 0,
+                last_status TEXT NOT NULL DEFAULT "never",
+                last_duration_ms INTEGER NOT NULL DEFAULT 0,
+                last_processed INTEGER NOT NULL DEFAULT 0,
+                last_failed INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT "",
+                next_run_epoch INTEGER NOT NULL DEFAULT 0,
+                total_runs INTEGER NOT NULL DEFAULT 0,
+                total_failures INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+
+        self::migrateIntelligence($pdo);
+    }
+
+    /**
+     * Fase CDN Inteligente: sessão lógica local, contador próprio de conexões,
+     * rastreio profundo de direct source, divergências e KPIs.
+     */
+    private static function migrateIntelligence(PDO $pdo): void
+    {
+        // Sessão LÓGICA da própria CDN (não é request, é conexão).
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS cdn_sessions (
+                session_key TEXT PRIMARY KEY,
+                username TEXT NOT NULL DEFAULT "",
+                credential_fingerprint TEXT NOT NULL DEFAULT "",
+                client_ip TEXT NOT NULL DEFAULT "",
+                user_agent TEXT NOT NULL DEFAULT "",
+                public_host TEXT NOT NULL DEFAULT "",
+                session_kind TEXT NOT NULL DEFAULT "other",
+                last_route_kind TEXT NOT NULL DEFAULT "",
+                stream_id INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL DEFAULT "",
+                started_epoch INTEGER NOT NULL DEFAULT 0,
+                last_seen_at TEXT NOT NULL DEFAULT "",
+                last_seen_epoch INTEGER NOT NULL DEFAULT 0,
+                idle_timeout INTEGER NOT NULL DEFAULT 60,
+                ended_epoch INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT "active",
+                close_reason TEXT NOT NULL DEFAULT "",
+                requests INTEGER NOT NULL DEFAULT 0,
+                bytes INTEGER NOT NULL DEFAULT 0,
+                errors INTEGER NOT NULL DEFAULT 0,
+                active_requests INTEGER NOT NULL DEFAULT 0,
+                last_open_epoch INTEGER NOT NULL DEFAULT 0,
+                last_close_epoch INTEGER NOT NULL DEFAULT 0,
+                direct_source INTEGER NOT NULL DEFAULT 0,
+                direct_host TEXT NOT NULL DEFAULT "",
+                xui_activity_id INTEGER NOT NULL DEFAULT 0,
+                match_confidence TEXT NOT NULL DEFAULT "pending",
+                match_reason TEXT NOT NULL DEFAULT "",
+                last_request_id TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        foreach ([
+            'active_requests' => 'INTEGER NOT NULL DEFAULT 0',
+            'last_open_epoch' => 'INTEGER NOT NULL DEFAULT 0',
+            'last_close_epoch' => 'INTEGER NOT NULL DEFAULT 0',
+        ] as $col => $decl) {
+            self::addColumnIfMissing($pdo, 'cdn_sessions', $col, $decl);
+        }
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cdnsess_user ON cdn_sessions(username, status)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cdnsess_seen ON cdn_sessions(last_seen_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cdnsess_status ON cdn_sessions(status, last_seen_epoch)');
+
+        // Cada hop seguido pelo proxy num consumo "direct source".
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS direct_source_hops (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                session_key TEXT NOT NULL DEFAULT "",
+                username TEXT NOT NULL DEFAULT "",
+                hop_no INTEGER NOT NULL DEFAULT 0,
+                from_host TEXT NOT NULL DEFAULT "",
+                to_host TEXT NOT NULL DEFAULT "",
+                off_origin INTEGER NOT NULL DEFAULT 0,
+                outcome TEXT NOT NULL DEFAULT "followed",
+                status INTEGER NOT NULL DEFAULT 0,
+                ts TEXT NOT NULL DEFAULT "",
+                ts_epoch INTEGER NOT NULL DEFAULT 0
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dsh_req ON direct_source_hops(request_id)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dsh_ts ON direct_source_hops(ts_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dsh_user ON direct_source_hops(username)');
+
+        // Divergência aberta entre o contador da CDN e o do XUI (ou limite).
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS cdn_divergences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL DEFAULT "",
+                kind TEXT NOT NULL DEFAULT "count_mismatch",
+                severity TEXT NOT NULL DEFAULT "warn",
+                cdn_count INTEGER NOT NULL DEFAULT 0,
+                xui_count INTEGER NOT NULL DEFAULT 0,
+                max_connections INTEGER NOT NULL DEFAULT 0,
+                probable_cause TEXT NOT NULL DEFAULT "",
+                detail TEXT NOT NULL DEFAULT "",
+                status TEXT NOT NULL DEFAULT "open",
+                opened_at TEXT NOT NULL DEFAULT "",
+                opened_epoch INTEGER NOT NULL DEFAULT 0,
+                last_seen_epoch INTEGER NOT NULL DEFAULT 0,
+                occurrences INTEGER NOT NULL DEFAULT 1,
+                closed_epoch INTEGER NOT NULL DEFAULT 0
+            )'
+        );
+        // O índice único antigo (username,kind,status) quebra quando já existem
+        // divergências múltiplas por stream/escopo. A fase direct source passa a
+        // usar idx_div_open_scope e esse formato antigo não deve mais ser criado.
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_div_seen ON cdn_divergences(last_seen_epoch)');
+
+        // Série curta de KPIs (picos, saúde) gravada pelo job metrics_rollup.
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS cdn_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                metric TEXT NOT NULL,
+                value INTEGER NOT NULL DEFAULT 0,
+                ts_epoch INTEGER NOT NULL DEFAULT 0
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_metrics_key ON cdn_metrics(metric, ts_epoch)');
+
+        foreach ([
+            'session_key' => 'TEXT NOT NULL DEFAULT ""',
+            'direct_host' => 'TEXT NOT NULL DEFAULT ""',
+            'hops' => 'INTEGER NOT NULL DEFAULT 0',
+        ] as $col => $decl) {
+            self::addColumnIfMissing($pdo, 'proxy_request_events', $col, $decl);
+        }
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_pre_session ON proxy_request_events(session_key)');
+
+        self::migrateDirectSource($pdo);
+    }
+
+    /**
+     * Fase LB (cérebro + músculos).
+     *
+     * O cérebro (VPS 45.140.192.237) mantém o inventário dos LBs, o log de
+     * instalação remota, a telemetria e a rota por usuário do XUI. Nenhuma
+     * tabela existente é alterada — o upgrade é puramente aditivo.
+     */
+    private static function migrateLb(PDO $pdo): void
+    {
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS lb_nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                label TEXT NOT NULL DEFAULT "",
+                public_ip TEXT NOT NULL DEFAULT "",
+                ssh_host TEXT NOT NULL DEFAULT "",
+                ssh_port INTEGER NOT NULL DEFAULT 22,
+                ssh_user TEXT NOT NULL DEFAULT "root",
+                ssh_password_enc TEXT NOT NULL DEFAULT "",
+                auth_mode TEXT NOT NULL DEFAULT "password",
+                key_installed INTEGER NOT NULL DEFAULT 0,
+                key_fingerprint TEXT NOT NULL DEFAULT "",
+                key_promoted_at TEXT NOT NULL DEFAULT "",
+                password_bootstrap_done INTEGER NOT NULL DEFAULT 0,
+                auto_install INTEGER NOT NULL DEFAULT 1,
+                os_name TEXT NOT NULL DEFAULT "",
+                os_version TEXT NOT NULL DEFAULT "",
+                cpu_cores INTEGER NOT NULL DEFAULT 0,
+                ram_mb INTEGER NOT NULL DEFAULT 0,
+                disk_total_gb INTEGER NOT NULL DEFAULT 0,
+                disk_free_gb INTEGER NOT NULL DEFAULT 0,
+                profile TEXT NOT NULL DEFAULT "",
+                declared_bandwidth_mbps INTEGER NOT NULL DEFAULT 0,
+                measured_bandwidth_mbps INTEGER NOT NULL DEFAULT 0,
+                health_status TEXT NOT NULL DEFAULT "unknown",
+                health_message TEXT NOT NULL DEFAULT "",
+                install_status TEXT NOT NULL DEFAULT "pending",
+                install_step TEXT NOT NULL DEFAULT "",
+                install_run_id TEXT NOT NULL DEFAULT "",
+                agent_token TEXT NOT NULL DEFAULT "",
+                enabled INTEGER NOT NULL DEFAULT 1,
+                drain_mode INTEGER NOT NULL DEFAULT 0,
+                weight INTEGER NOT NULL DEFAULT 100,
+                max_users_soft INTEGER NOT NULL DEFAULT 0,
+                max_users_hard INTEGER NOT NULL DEFAULT 0,
+                max_mbps_soft INTEGER NOT NULL DEFAULT 0,
+                max_mbps_hard INTEGER NOT NULL DEFAULT 0,
+                last_seen_epoch INTEGER NOT NULL DEFAULT 0,
+                last_probe_epoch INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT "",
+                updated_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_lb_ip ON lb_nodes(public_ip)');
+        self::addColumnIfMissing($pdo, 'lb_nodes', 'auth_mode', 'TEXT NOT NULL DEFAULT "password"');
+        self::addColumnIfMissing($pdo, 'lb_nodes', 'key_installed', 'INTEGER NOT NULL DEFAULT 0');
+        self::addColumnIfMissing($pdo, 'lb_nodes', 'key_fingerprint', 'TEXT NOT NULL DEFAULT ""');
+        self::addColumnIfMissing($pdo, 'lb_nodes', 'key_promoted_at', 'TEXT NOT NULL DEFAULT ""');
+        self::addColumnIfMissing($pdo, 'lb_nodes', 'password_bootstrap_done', 'INTEGER NOT NULL DEFAULT 0');
+        self::addColumnIfMissing($pdo, 'lb_nodes', 'auto_install', 'INTEGER NOT NULL DEFAULT 1');
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS lb_installs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lb_id INTEGER NOT NULL,
+                run_id TEXT NOT NULL,
+                seq INTEGER NOT NULL DEFAULT 0,
+                step TEXT NOT NULL DEFAULT "",
+                status TEXT NOT NULL DEFAULT "running",
+                message TEXT NOT NULL DEFAULT "",
+                ts_epoch INTEGER NOT NULL DEFAULT 0,
+                duration_ms INTEGER NOT NULL DEFAULT 0
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_lbi_run ON lb_installs(lb_id, run_id, seq)');
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS lb_user_routes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                lb_id INTEGER NOT NULL DEFAULT 0,
+                mode TEXT NOT NULL DEFAULT "auto",
+                reason TEXT NOT NULL DEFAULT "",
+                created_at TEXT NOT NULL DEFAULT "",
+                updated_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_lbroute_user ON lb_user_routes(username)');
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS lb_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lb_id INTEGER NOT NULL,
+                ts_epoch INTEGER NOT NULL DEFAULT 0,
+                cpu_pct REAL NOT NULL DEFAULT 0,
+                ram_used_mb INTEGER NOT NULL DEFAULT 0,
+                ram_free_mb INTEGER NOT NULL DEFAULT 0,
+                disk_free_gb INTEGER NOT NULL DEFAULT 0,
+                rx_mbps REAL NOT NULL DEFAULT 0,
+                tx_mbps REAL NOT NULL DEFAULT 0,
+                sessions_active INTEGER NOT NULL DEFAULT 0,
+                users_active INTEGER NOT NULL DEFAULT 0,
+                errors_5m INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT "probe"
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_lbm_node ON lb_metrics(lb_id, ts_epoch)');
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS lb_sync_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lb_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL DEFAULT "",
+                status TEXT NOT NULL DEFAULT "",
+                payload_json TEXT NOT NULL DEFAULT "{}",
+                created_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_lbse_node ON lb_sync_events(lb_id, id)');
+
+        // Rastreabilidade: todo request e sessão sabem por qual músculo passou.
+        self::addColumnIfMissing($pdo, 'proxy_request_events', 'lb_id', 'INTEGER NOT NULL DEFAULT 0');
+        self::addColumnIfMissing($pdo, 'cdn_sessions', 'lb_id', 'INTEGER NOT NULL DEFAULT 0');
+    }
+
+    /**
+     * Fase DIRECT SOURCE PERFEITO (VPS 45.140.192.237 — /opt/proxy-mago/proxy-mago-base).
+     *
+     * O XUI real deste projeto (banco `xui` em 38.190.176.170) marca boa parte
+     * do conteúdo como `streams.direct_source = 1` e já guarda a URL externa em
+     * `streams.stream_source`. Ou seja: existe direct source que NUNCA gera
+     * redirect em runtime. A CDN precisa das duas verdades — DB e runtime — e
+     * de uma verdade efetiva consolidada, que é a que o painel mostra.
+     */
+    private static function migrateDirectSource(PDO $pdo): void
+    {
+        // 1) Espelho de streams enriquecido com a verdade do DB do XUI.
+        foreach ([
+            'direct_source' => 'INTEGER NOT NULL DEFAULT 0',
+            'direct_proxy' => 'INTEGER NOT NULL DEFAULT 0',
+            'stream_source_raw' => 'TEXT NOT NULL DEFAULT ""',
+            'direct_host_detected' => 'TEXT NOT NULL DEFAULT ""',
+            'direct_hosts_json' => 'TEXT NOT NULL DEFAULT "[]"',
+            'urls_count' => 'INTEGER NOT NULL DEFAULT 0',
+            'source_mode' => 'TEXT NOT NULL DEFAULT "unknown"',
+            'parse_status' => 'TEXT NOT NULL DEFAULT "pending"',
+            'parse_error' => 'TEXT NOT NULL DEFAULT ""',
+            'enriched_epoch' => 'INTEGER NOT NULL DEFAULT 0',
+        ] as $col => $decl) {
+            self::addColumnIfMissing($pdo, 'xui_streams_cache', $col, $decl);
+        }
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xsc_direct ON xui_streams_cache(direct_source)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xsc_host ON xui_streams_cache(direct_host_detected)');
+        // Cobre o resumo direct source sem tocar na tabela (322k+ linhas).
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xsc_direct_parse ON xui_streams_cache(direct_source, parse_status)');
+
+        // 2) Verdade consolidada por stream: DB + runtime + efetivo.
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS direct_stream_state (
+                stream_id INTEGER PRIMARY KEY,
+                stream_name TEXT NOT NULL DEFAULT "",
+                stream_type TEXT NOT NULL DEFAULT "",
+                direct_flag_db INTEGER NOT NULL DEFAULT 0,
+                direct_proxy INTEGER NOT NULL DEFAULT 0,
+                direct_host_from_db TEXT NOT NULL DEFAULT "",
+                direct_host_runtime TEXT NOT NULL DEFAULT "",
+                direct_host_effective TEXT NOT NULL DEFAULT "",
+                direct_origin_mode TEXT NOT NULL DEFAULT "none",
+                direct_consistency TEXT NOT NULL DEFAULT "unknown",
+                parse_status TEXT NOT NULL DEFAULT "pending",
+                urls_count INTEGER NOT NULL DEFAULT 0,
+                runtime_hits INTEGER NOT NULL DEFAULT 0,
+                runtime_failures INTEGER NOT NULL DEFAULT 0,
+                runtime_last_epoch INTEGER NOT NULL DEFAULT 0,
+                db_synced_epoch INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT "",
+                updated_epoch INTEGER NOT NULL DEFAULT 0
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dss_mode ON direct_stream_state(direct_origin_mode)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dss_cons ON direct_stream_state(direct_consistency)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dss_host ON direct_stream_state(direct_host_effective)');
+        // Índice de cobertura do resumo do painel (modo + consistência):
+        // evita varrer as ~484k linhas de catálogo a cada leitura.
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dss_mode_cons ON direct_stream_state(direct_origin_mode, direct_consistency)');
+
+        // 3) Hops com contexto operacional completo (quem, de onde, por qual player).
+        foreach ([
+            'stream_id' => 'INTEGER NOT NULL DEFAULT 0',
+            'public_host' => 'TEXT NOT NULL DEFAULT ""',
+            'client_ip' => 'TEXT NOT NULL DEFAULT ""',
+            'player' => 'TEXT NOT NULL DEFAULT ""',
+            'route_kind' => 'TEXT NOT NULL DEFAULT ""',
+            'final_host' => 'TEXT NOT NULL DEFAULT ""',
+            'direct_mode' => 'TEXT NOT NULL DEFAULT "runtime"',
+            'host_from_db' => 'TEXT NOT NULL DEFAULT ""',
+            'error' => 'TEXT NOT NULL DEFAULT ""',
+        ] as $col => $decl) {
+            self::addColumnIfMissing($pdo, 'direct_source_hops', $col, $decl);
+        }
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dsh_final ON direct_source_hops(final_host, ts_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dsh_stream ON direct_source_hops(stream_id, ts_epoch)');
+
+        // 4) Sessões locais sabem se são direct, por qual modo e desde quando.
+        foreach ([
+            'direct_mode' => 'TEXT NOT NULL DEFAULT ""',
+            'direct_host_db' => 'TEXT NOT NULL DEFAULT ""',
+            'direct_host_runtime' => 'TEXT NOT NULL DEFAULT ""',
+            'direct_host_effective' => 'TEXT NOT NULL DEFAULT ""',
+            'direct_first_epoch' => 'INTEGER NOT NULL DEFAULT 0',
+            'direct_last_epoch' => 'INTEGER NOT NULL DEFAULT 0',
+            'direct_failures' => 'INTEGER NOT NULL DEFAULT 0',
+            'direct_blocked' => 'INTEGER NOT NULL DEFAULT 0',
+        ] as $col => $decl) {
+            self::addColumnIfMissing($pdo, 'cdn_sessions', $col, $decl);
+        }
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cdnsess_direct ON cdn_sessions(direct_source, status)');
+
+        // 5) Eventos por request também guardam o modo do direct.
+        foreach ([
+            'direct_mode' => 'TEXT NOT NULL DEFAULT ""',
+            'direct_host_db' => 'TEXT NOT NULL DEFAULT ""',
+        ] as $col => $decl) {
+            self::addColumnIfMissing($pdo, 'proxy_request_events', $col, $decl);
+        }
+
+        // 6) Rollup por host final (5 em 5 minutos) — KPI de direct por host.
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS direct_host_rollup (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                host TEXT NOT NULL,
+                bucket_epoch INTEGER NOT NULL,
+                direct_mode TEXT NOT NULL DEFAULT "runtime",
+                hits INTEGER NOT NULL DEFAULT 0,
+                failures INTEGER NOT NULL DEFAULT 0,
+                users INTEGER NOT NULL DEFAULT 0,
+                streams INTEGER NOT NULL DEFAULT 0,
+                updated_epoch INTEGER NOT NULL DEFAULT 0
+            )'
+        );
+        $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_dhr_key ON direct_host_rollup(host, bucket_epoch, direct_mode)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dhr_bucket ON direct_host_rollup(bucket_epoch)');
+
+        // 7) Divergências ganham escopo (usuário OU stream) sem perder o histórico.
+        self::addColumnIfMissing($pdo, 'cdn_divergences', 'scope', 'TEXT NOT NULL DEFAULT ""');
+        self::addColumnIfMissing($pdo, 'cdn_divergences', 'stream_id', 'INTEGER NOT NULL DEFAULT 0');
+        // Em produção real desta VPS, múltiplos jobs e estados parcialmente
+        // migrados já causaram conflitos espúrios com índice único em SQLite.
+        // A deduplicação passa a ser responsabilidade do código (Divergence::raise),
+        // e mantemos só um índice de busca para não travar o runtime.
+        $pdo->exec('DROP INDEX IF EXISTS idx_div_open');
+        $pdo->exec('DROP INDEX IF EXISTS idx_div_open_scope');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_div_scope ON cdn_divergences(username, kind, scope, status)');
+
+        self::migrateLb($pdo);
+        self::migrateAppCode($pdo);
+        self::migrateTraceability($pdo);
+    }
+
+    /**
+     * Fase RASTREABILIDADE TOTAL (VPS 45.140.192.237 — /opt/proxy-mago/proxy-mago-base).
+     *
+     *  - job_state/job_runs ganham passo atual, falhas consecutivas, lock de
+     *    execução e disjuntor (circuit breaker);
+     *  - job_step_history: cada etapa interna de um job é auditável;
+     *  - cdn_audit_timeline: UMA linha por sessão lógica com a trilha completa
+     *    (quem, de onde, por qual host público, por qual LB, direct source,
+     *     divergência, bytes, erros) — é a "linha do tempo" do painel;
+     *  - lb_route_history: toda troca de músculo por usuário fica registrada.
+     */
+    private static function migrateTraceability(PDO $pdo): void
+    {
+        foreach ([
+            'current_step' => 'TEXT NOT NULL DEFAULT ""',
+            'consecutive_failures' => 'INTEGER NOT NULL DEFAULT 0',
+            'last_run_id' => 'TEXT NOT NULL DEFAULT ""',
+            'running' => 'INTEGER NOT NULL DEFAULT 0',
+            'running_since_epoch' => 'INTEGER NOT NULL DEFAULT 0',
+            'circuit_open_until' => 'INTEGER NOT NULL DEFAULT 0',
+            'circuit_reason' => 'TEXT NOT NULL DEFAULT ""',
+            'skipped_runs' => 'INTEGER NOT NULL DEFAULT 0',
+            'max_duration_ms' => 'INTEGER NOT NULL DEFAULT 0',
+        ] as $col => $decl) {
+            self::addColumnIfMissing($pdo, 'job_state', $col, $decl);
+        }
+        foreach ([
+            'last_step' => 'TEXT NOT NULL DEFAULT ""',
+            'steps_done' => 'INTEGER NOT NULL DEFAULT 0',
+            'lock_retries' => 'INTEGER NOT NULL DEFAULT 0',
+            'host' => 'TEXT NOT NULL DEFAULT ""',
+        ] as $col => $decl) {
+            self::addColumnIfMissing($pdo, 'job_runs', $col, $decl);
+        }
+
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS job_step_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                job_name TEXT NOT NULL,
+                seq INTEGER NOT NULL DEFAULT 0,
+                step TEXT NOT NULL DEFAULT "",
+                status TEXT NOT NULL DEFAULT "ok",
+                message TEXT NOT NULL DEFAULT "",
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                ts_epoch INTEGER NOT NULL DEFAULT 0
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_jsh_run ON job_step_history(run_id, seq)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_jsh_job ON job_step_history(job_name, ts_epoch)');
+
+        // Trilha única e consolidada por sessão lógica (o "quem fez o quê").
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS cdn_audit_timeline (
+                session_key TEXT PRIMARY KEY,
+                username TEXT NOT NULL DEFAULT "",
+                credential_fingerprint TEXT NOT NULL DEFAULT "",
+                client_ip TEXT NOT NULL DEFAULT "",
+                user_agent TEXT NOT NULL DEFAULT "",
+                public_host TEXT NOT NULL DEFAULT "",
+                session_kind TEXT NOT NULL DEFAULT "",
+                stream_id INTEGER NOT NULL DEFAULT 0,
+                origin_id INTEGER NOT NULL DEFAULT 0,
+                lb_id INTEGER NOT NULL DEFAULT 0,
+                lb_target TEXT NOT NULL DEFAULT "main",
+                lb_reason TEXT NOT NULL DEFAULT "",
+                direct_source INTEGER NOT NULL DEFAULT 0,
+                direct_host TEXT NOT NULL DEFAULT "",
+                first_request_id TEXT NOT NULL DEFAULT "",
+                last_request_id TEXT NOT NULL DEFAULT "",
+                last_path TEXT NOT NULL DEFAULT "",
+                last_status INTEGER NOT NULL DEFAULT 0,
+                last_reason TEXT NOT NULL DEFAULT "",
+                inconsistency TEXT NOT NULL DEFAULT "",
+                requests INTEGER NOT NULL DEFAULT 0,
+                errors INTEGER NOT NULL DEFAULT 0,
+                bytes INTEGER NOT NULL DEFAULT 0,
+                hops INTEGER NOT NULL DEFAULT 0,
+                started_epoch INTEGER NOT NULL DEFAULT 0,
+                last_epoch INTEGER NOT NULL DEFAULT 0
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_tl_last ON cdn_audit_timeline(last_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_tl_user ON cdn_audit_timeline(username, last_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_tl_ip ON cdn_audit_timeline(client_ip, last_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_tl_host ON cdn_audit_timeline(public_host, last_epoch)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_tl_problem ON cdn_audit_timeline(inconsistency, last_epoch)');
+
+        // Roteamento por usuário: histórico + snapshot da decisão.
+        foreach ([
+            'last_lb_id' => 'INTEGER NOT NULL DEFAULT 0',
+            'score_snapshot' => 'REAL NOT NULL DEFAULT 0',
+            'fallback_used' => 'INTEGER NOT NULL DEFAULT 0',
+            'changed_epoch' => 'INTEGER NOT NULL DEFAULT 0',
+            'changes' => 'INTEGER NOT NULL DEFAULT 0',
+        ] as $col => $decl) {
+            self::addColumnIfMissing($pdo, 'lb_user_routes', $col, $decl);
+        }
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS lb_route_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                from_lb_id INTEGER NOT NULL DEFAULT 0,
+                to_lb_id INTEGER NOT NULL DEFAULT 0,
+                mode TEXT NOT NULL DEFAULT "",
+                reason TEXT NOT NULL DEFAULT "",
+                score REAL NOT NULL DEFAULT 0,
+                trigger_source TEXT NOT NULL DEFAULT "",
+                ts_epoch INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_lbrh_user ON lb_route_history(username, id)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_lbrh_ts ON lb_route_history(ts_epoch)');
+    }
+
+    /**
+     * Código de App (multi-XUI): um DNS fixo dentro do app atende assinantes
+     * espalhados em vários XUIs. Cada username fica GRUDADO em um XUI só.
+     */
+    private static function migrateAppCode(PDO $pdo): void
+    {
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS app_servers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL DEFAULT "",
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL DEFAULT 0,
+                scheme TEXT NOT NULL DEFAULT "http",
+                host_header TEXT NOT NULL DEFAULT "",
+                extra_hosts TEXT NOT NULL DEFAULT "",
+                priority INTEGER NOT NULL DEFAULT 100,
+                active INTEGER NOT NULL DEFAULT 1,
+                notes TEXT NOT NULL DEFAULT "",
+                created_at TEXT NOT NULL DEFAULT "",
+                updated_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_app_servers_active ON app_servers(active, priority)');
+
+        // Rota grudada: a garantia anti-embaralhamento.
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS app_user_routes (
+                username TEXT PRIMARY KEY,
+                server_id INTEGER NOT NULL,
+                scheme TEXT NOT NULL DEFAULT "http",
+                host TEXT NOT NULL DEFAULT "",
+                port INTEGER NOT NULL DEFAULT 80,
+                status TEXT NOT NULL DEFAULT "ok",
+                hits INTEGER NOT NULL DEFAULT 0,
+                failures INTEGER NOT NULL DEFAULT 0,
+                discovered_epoch INTEGER NOT NULL DEFAULT 0,
+                last_epoch INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_aur_server ON app_user_routes(server_id)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_aur_last ON app_user_routes(last_epoch DESC)');
+
+        // Cache negativo: usuário inexistente não varre os XUIs a cada request.
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS app_negative_cache (
+                username TEXT PRIMARY KEY,
+                until_epoch INTEGER NOT NULL DEFAULT 0
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_anc_until ON app_negative_cache(until_epoch)');
+
+        // Lock de descoberta: evita 10 players do mesmo user varrerem juntos.
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS app_discovery_lock (
+                username TEXT PRIMARY KEY,
+                expires_epoch INTEGER NOT NULL DEFAULT 0
             )'
         );
     }

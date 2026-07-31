@@ -18,6 +18,8 @@ $panelDomain = trim((string) ($_POST['panel_domain'] ?? ''));
 $originHost = trim((string) ($_POST['origin_host'] ?? '127.0.0.1'));
 $originPort = (int) ($_POST['origin_port'] ?? 80);
 $allowedUserAgent = trim((string) ($_POST['allowed_user_agent'] ?? ''));
+$uaFilterEnabled = isset($_POST['ua_filter_enabled']) ? 1 : 0;
+$logSegments = isset($_POST['log_segments']) ? 1 : 0;
 $tokenTtl = (int) ($_POST['token_ttl'] ?? Config::get('token_ttl'));
 $rateLimit = (int) ($_POST['rate_limit_per_minute'] ?? Config::get('rate_limit_per_minute'));
 $appSecret = trim((string) ($_POST['app_secret'] ?? ''));
@@ -46,6 +48,10 @@ SettingsRepository::set('panel_domain', $panelDomain);
 SettingsRepository::set('origin_host', $originHost);
 SettingsRepository::set('origin_port', $originPort);
 SettingsRepository::set('allowed_user_agent', $allowedUserAgent);
+// Filtro de UA é opt-in: apps comuns (XCIPTV, IBO, Smarters, TiviMate, VLC)
+// mandam User-Agents diferentes e um valor fixo derrubaria todos.
+SettingsRepository::set('ua_filter_enabled', $allowedUserAgent === '' ? 0 : $uaFilterEnabled);
+SettingsRepository::set('log_segments', $logSegments);
 SettingsRepository::set('token_ttl', max(60, $tokenTtl));
 SettingsRepository::set('rate_limit_per_minute', max(0, $rateLimit));
 

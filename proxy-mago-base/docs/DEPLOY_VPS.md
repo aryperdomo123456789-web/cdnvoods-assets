@@ -51,8 +51,33 @@ Somente `proxy-mago-base/` é servido pelo Nginx. Os arquivos antigos na raiz do
 repositório permanecem apenas como referência e não devem receber permissão de
 escrita do usuário `www-data`.
 
-## Cloudflare / DNS
+## DNS publico
 
-- `cdnvoods.vr766.com` → A record para o IP da VPS, **com proxy laranja ligado**.
-- Aliases extras → CNAME para `cdnvoods.vr766.com`, também proxied.
-- Nunca crie DNS público apontando para `38.190.176.170` (origem XUI).
+- `cdnvoods.vr766.com` -> A record para o IP da VPS `45.140.192.237`
+- Aliases extras -> A para a VPS ou CNAME para `cdnvoods.vr766.com`
+- Operacao atual: **DNS only / nuvem cinza**
+- Nunca crie DNS público apontando para `38.190.176.170` ou qualquer DNS do XUI
+
+## Modelo operacional
+
+- A VPS protege apenas a origem XUI
+- O IP da VPS nao e escondido
+- O stream deve passar da forma mais enxuta possivel
+- A VPS nao deve processar video, apenas proteger e encaminhar
+
+Consulte tambem:
+
+- `docs/ARQUITETURA_LEVE_SEM_NUVEM_LARANJA.md`
+
+## Fechamento (31/07/2026)
+
+Deploy + validação completa na VPS:
+
+```bash
+cd /opt/proxy-mago/proxy-mago-base
+sudo bash bin/deploy.sh
+bash bin/smoke-test.sh voods.suafontee.com <usuario> <senha>
+```
+
+Resultados E2E, números de carga (5/10/20/50 usuários) e checklist final em
+`docs/FECHAMENTO_2026-07-31.md`.

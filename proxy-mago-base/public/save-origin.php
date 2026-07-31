@@ -13,6 +13,7 @@ $scheme = in_array($_POST['scheme'] ?? 'http', ['http', 'https'], true) ? $_POST
 $type = strtolower(trim((string) ($_POST['type'] ?? 'a'))) === 'cname' ? 'cname' : 'a';
 $basePath = trim((string) ($_POST['base_path'] ?? ''));
 $hostHeader = trim((string) ($_POST['host_header'] ?? ''));
+$extraHosts = strtolower(trim((string) ($_POST['extra_hosts'] ?? '')));
 $authUser = (string) ($_POST['auth_user'] ?? '');
 $authPass = (string) ($_POST['auth_pass'] ?? '');
 $active = !empty($_POST['active']);
@@ -45,6 +46,7 @@ $data = [
     'scheme' => $scheme,
     'base_path' => $basePath,
     'host_header' => $hostHeader,
+    'extra_hosts' => $extraHosts,
     'auth_user' => $authUser,
     'auth_pass' => $authPass,
     'active' => $active,

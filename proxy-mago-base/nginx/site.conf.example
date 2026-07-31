@@ -1,30 +1,69 @@
+# Exemplo alinhado ao que o painel gera (VPS 45.140.192.237 / Ubuntu 22.04).
+# Copie para /etc/nginx/sites-available/proxy-mago.conf ou use o botão
+# "Aplicar no Nginx" do painel (bin/apply-nginx.php).
+
+# ---------- DOMÍNIOS PÚBLICOS DOS CLIENTES ----------
+# default_server: atende qualquer domínio apontado para a VPS (A ou CNAME).
+# Sem redirect 80 -> 443 e sem painel.
+server {
+    listen 80 default_server;
+    server_name _;
+
+    root /opt/proxy-mago/proxy-mago-base/public;
+
+    access_log off;
+    error_log  /opt/proxy-mago/proxy-mago-base/storage/logs/error.log warn;
+
+    server_tokens off;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+
+    client_max_body_size 1m;
+    fastcgi_buffering off;
+    proxy_buffering off;
+    tcp_nodelay on;
+    sendfile off;
+
+    location = /              { return 404; }
+    location = /index.php     { return 404; }
+    location = /login.php     { return 404; }
+    location = /dashboard.php { return 404; }
+    location = /avancado.php  { return 404; }
+    location = /setup.php     { return 404; }
+    location = /health.php    { return 404; }
+    location ^~ /assets/      { return 404; }
+
+    location / {
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php/php8.1-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root/proxy.php;
+        fastcgi_param SCRIPT_NAME /proxy.php;
+        fastcgi_read_timeout 3600;
+        fastcgi_send_timeout 3600;
+        fastcgi_buffering off;
+    }
+}
+
+# ---------- PAINEL ADMINISTRATIVO ----------
 server {
     listen 80;
-    server_name painel.seudominio.com;
+    server_name cdnvoods.vr766.com;
 
     root /opt/proxy-mago/proxy-mago-base/public;
     index index.php;
 
-    access_log /opt/proxy-mago/proxy-mago-base/storage/logs/access.log;
-    error_log /opt/proxy-mago/proxy-mago-base/storage/logs/error.log;
+    access_log off;
+    error_log  /opt/proxy-mago/proxy-mago-base/storage/logs/error.log warn;
 
     location / {
         try_files $uri $uri/ /index.php?$query_string;
     }
 
-    location /media/ {
-        proxy_pass http://45.140.192.237:80;
-        proxy_http_version 1.1;
-        proxy_set_header Host 45.140.192.237;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_buffering off;
-        proxy_request_buffering off;
-    }
-
     location ~ \.php$ {
+        try_files $uri =404;
         include fastcgi_params;
         fastcgi_pass unix:/run/php/php8.1-fpm.sock;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_read_timeout 120;
     }
 }

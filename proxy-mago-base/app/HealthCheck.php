@@ -2,7 +2,25 @@
 
 final class HealthCheck
 {
-    public static function run(): array
+    private const TTL = 30;
+
+    /** Resultado com cache curto: cada origem faz I/O de rede (até 3s). */
+    public static function run(bool $fresh = false): array
+    {
+        $file = dirname(__DIR__) . '/storage/cache/health.json';
+        if (!$fresh && is_file($file) && (time() - (int) @filemtime($file)) < self::TTL) {
+            $cached = json_decode((string) @file_get_contents($file), true);
+            if (is_array($cached) && $cached) {
+                return $cached;
+            }
+        }
+
+        $checks = self::collect();
+        @file_put_contents($file, json_encode($checks, JSON_UNESCAPED_UNICODE), LOCK_EX);
+        return $checks;
+    }
+
+    private static function collect(): array
     {
         $checks = [];
         $origins = OriginRepository::all();

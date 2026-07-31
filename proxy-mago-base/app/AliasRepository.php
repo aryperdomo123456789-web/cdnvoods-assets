@@ -19,7 +19,8 @@ final class AliasRepository
             'SELECT a.*, o.host AS origin_host, o.port AS origin_port, o.scheme AS origin_scheme,
                     o.base_path AS origin_base_path, o.auth_user AS origin_user, o.auth_pass AS origin_pass,
                     o.active AS origin_active, o.name AS origin_name,
-                    o.host_header AS origin_host_header, o.type AS origin_type
+                    o.host_header AS origin_host_header, o.type AS origin_type,
+                    o.extra_hosts AS origin_extra_hosts
                FROM aliases a
                JOIN origins o ON o.id = a.origin_id
               WHERE lower(a.hostname) = lower(:h) AND a.active = 1
@@ -52,14 +53,15 @@ final class AliasRepository
             Database::pdo()->exec('UPDATE aliases SET is_primary = 0');
         }
         $stmt = Database::pdo()->prepare(
-            'INSERT INTO aliases (hostname, origin_id, is_primary, active, created_at, updated_at)
-             VALUES (:hostname, :origin_id, :is_primary, :active, :created_at, :updated_at)'
+            'INSERT INTO aliases (hostname, origin_id, is_primary, active, require_token, created_at, updated_at)
+             VALUES (:hostname, :origin_id, :is_primary, :active, :require_token, :created_at, :updated_at)'
         );
         $stmt->execute([
             ':hostname' => strtolower(trim((string) ($data['hostname'] ?? ''))),
             ':origin_id' => (int) ($data['origin_id'] ?? 0),
             ':is_primary' => !empty($data['is_primary']) ? 1 : 0,
             ':active' => !empty($data['active']) ? 1 : 0,
+            ':require_token' => !empty($data['require_token']) ? 1 : 0,
             ':created_at' => $now,
             ':updated_at' => $now,
         ]);
@@ -81,6 +83,7 @@ final class AliasRepository
                     origin_id = :origin_id,
                     is_primary = :is_primary,
                     active = :active,
+                    require_token = :require_token,
                     updated_at = :updated_at
               WHERE id = :id'
         );
@@ -89,6 +92,7 @@ final class AliasRepository
             ':origin_id' => (int) ($data['origin_id'] ?? $current['origin_id']),
             ':is_primary' => !empty($data['is_primary']) ? 1 : 0,
             ':active' => !empty($data['active']) ? 1 : 0,
+            ':require_token' => !empty($data['require_token']) ? 1 : 0,
             ':updated_at' => date('c'),
             ':id' => $id,
         ]);

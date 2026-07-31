@@ -1,0 +1,13 @@
+storage/app.sqlite
+storage/app.sqlite-shm
+storage/app.sqlite-wal
+storage/app.db
+storage/logs/
+storage/cache/
+*.log
+*.tmp
+*.swp
+
+# chaveiro SSH do LB (nunca versionar)
+storage/ssh/
+.ssh/

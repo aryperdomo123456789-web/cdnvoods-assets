@@ -1,0 +1,9 @@
+{
+  "name": "cdnvoods-proxy-mago",
+  "private": true,
+  "version": "1.0.0",
+  "description": "CDN Voods - proxy PHP (sem build JS; dev server via lovable.toml)",
+  "scripts": {
+    "dev": "nix run nixpkgs#php82 -- -S 0.0.0.0:8080 -t public bin/router.php"
+  }
+}

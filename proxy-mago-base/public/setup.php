@@ -35,6 +35,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         SettingsRepository::set('origin_port', $originPort);
         SettingsRepository::set('app_secret', $appSecret);
         SettingsRepository::set('allowed_user_agent', (string) Config::get('allowed_user_agent', ''));
+        SettingsRepository::set('ua_filter_enabled', 0);
+        SettingsRepository::set('log_segments', 0);
         SettingsRepository::set('token_ttl', (int) Config::get('token_ttl', 3600));
         SettingsRepository::set('created_at', date('c'));
 

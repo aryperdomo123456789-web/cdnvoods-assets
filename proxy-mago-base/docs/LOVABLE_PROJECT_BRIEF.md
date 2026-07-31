@@ -1,5 +1,25 @@
 # Lovable Project Brief - Proxy Mago
 
+## Mandatory Environment Rule
+
+This project is being developed **directly on the real production-like VPS**:
+
+- Host VPS: `45.140.192.237`
+- OS: `Ubuntu 22.04`
+- Active path: `/opt/proxy-mago/proxy-mago-base`
+
+Lovable must **never assume** it is working against an isolated default local
+environment of its own. All reasoning, documentation and implementation must
+treat this repository as the codebase that is meant to run on the Ubuntu 22.04
+server above.
+
+If a document or code path seems ambiguous, the correct interpretation is:
+
+- runtime target = this VPS
+- filesystem target = this VPS
+- nginx/php/sqlite references = this VPS
+- operational decisions = this VPS
+
 ## Context
 
 This repository is the working source for a lightweight anti-leak proxy panel for a single XUI origin server.
@@ -8,7 +28,7 @@ The goal is to keep the stack small, cheap to run, and easy to maintain on Ubunt
 
 ## Current State
 
-Date: 2026-07-23
+Date: 2026-07-31
 
 Deployed environment:
 
@@ -19,6 +39,8 @@ Deployed environment:
 - Active project path on VPS: `/opt/proxy-mago/proxy-mago-base`
 - Git repository initialized on the VPS and connected to GitHub
 - Default branch: `main`
+- Active public panel: `https://cdnvoods.vr766.com/`
+- Public alias under test: `voods.suafontee.com`
 
 ## Project Goal
 
@@ -61,37 +83,39 @@ The active implementation lives in:
 
 ## What Still Needs To Be Built
 
-- actual token/signature validation for playback requests
-- origin proxy routing rules for the stream paths
-- URL rewrite layer for playlists and stream endpoints
-- better validation for origin host and domain mapping
-- optional per-IP limit and abuse tracking
-- safer export/install workflow for the Nginx config
-- a documented install path for Cloudflare-proxied main and alias hostnames
+- remove hard dependency on `allowed_user_agent`
+- stop forcing public aliases from `:80` to `:443`
+- fix current `500` path on public alias after guard passes
+- move very large playlist rewrite to streaming / line-by-line mode
+- isolate panel-domain behaviour from public streaming aliases
+- produce final production checklist for broad player compatibility
 
 ## Practical Example
 
 - Official main: `cdnvoods.vr766.com`
 - Origin XUI: `38.190.176.170`
 - Origin port: `80`
-- Cloudflare mode for public hostnames: proxied/orange-cloud when the objective is to hide the VPS IP
+- Current operating target: DNS only / gray-cloud, without hiding the VPS IP
 
 ## Operating Rules For Lovable
 
 - Treat `proxy-mago-base/` as the active source of truth.
 - Treat the old root-level files as legacy/reference material unless explicitly asked to migrate them.
+- Treat `_isolated_2026-07-31/` as legacy/reference only.
 - Keep changes small and incremental.
 - Prefer clarity and reliability over clever abstractions.
 - Preserve low memory usage.
 - Avoid framework migration unless the user explicitly asks for it.
+- Never document steps as if they belong to "your local machine" in the abstract.
+  If instructions are operational, tie them explicitly to this VPS and its paths.
 
 ## Suggested Next Tasks
 
-1. cleanly separate legacy files from the active panel
-2. add the proxy routing layer for one origin
-3. add tokenized playback protection
-4. add a one-click Nginx export/apply flow
-5. add simple health checks and logs in the panel
+1. remove UA whitelist as a production requirement
+2. stop redirecting public aliases to HTTPS
+3. fix public `500` path and validate `get.php`, `player_api.php`, `xmltv.php`
+4. implement streaming rewrite for giant playlists
+5. validate production checklist against real users and real aliases
 
 ## Sync Workflow
 

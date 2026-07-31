@@ -26,7 +26,7 @@ final class AccessGuard
         '2405:8100::/32','2a06:98c0::/29','2c0f:f248::/32',
     ];
 
-    public static function check(string $hostname, string $clientIp, string $userAgent, string $token = ''): array
+    public static function check(string $hostname, string $clientIp, string $userAgent, string $token = '', bool $applyRateLimit = true): array
     {
         $alias = AliasRepository::findByHostname($hostname);
         if (!$alias) {
@@ -36,33 +36,44 @@ final class AccessGuard
             return self::deny(503, 'origin_disabled');
         }
 
-        $allowedUa = trim((string) SettingsRepository::get('allowed_user_agent', Config::get('allowed_user_agent', '')));
-        if ($allowedUa !== '' && stripos($userAgent, $allowedUa) === false) {
-            return self::deny(403, 'ua_blocked');
+        // Filtro de User-Agent é OPT-IN. XCIPTV, IBO Player, Smarters, TiviMate e
+        // VLC mandam UAs diferentes: travar em um valor fixo derruba todo mundo.
+        $uaFilterOn = (int) SettingsRepository::get('ua_filter_enabled', 0) === 1;
+        if ($uaFilterOn) {
+            $allowedUa = trim((string) SettingsRepository::get('allowed_user_agent', ''));
+            if ($allowedUa !== '' && stripos($userAgent, $allowedUa) === false) {
+                return self::deny(403, 'ua_blocked');
+            }
         }
 
-        if (!self::rateLimitOk($clientIp)) {
+        // Rate limit grava no SQLite; aplicar isso em CADA segmento .ts custaria
+        // muito I/O. Limitamos só o que abre sessão (playlist/API).
+        if ($applyRateLimit && !self::rateLimitOk($clientIp)) {
             return self::deny(429, 'rate_limited');
         }
 
-        // Token OBRIGATÓRIO.
-        if ($token === '') {
+        // Fluxo XUI clássico: o assinante chega com username/password na query.
+        // O token só é exigido quando o alias está marcado com require_token = 1.
+        $requireToken = (int) ($alias['require_token'] ?? 0) === 1;
+        $tokenRow = null;
+        if ($token !== '') {
+            $tokenRow = Tokens::find($token);
+            if (!$tokenRow) {
+                return self::deny(401, 'token_invalid');
+            }
+            if (strtotime((string) $tokenRow['expires_at']) < time()) {
+                return self::deny(401, 'token_expired');
+            }
+            if ((int) $tokenRow['alias_id'] !== (int) $alias['id']) {
+                return self::deny(401, 'token_alias_mismatch');
+            }
+            if ($tokenRow['allowed_ip'] !== '' && !self::ipMatches($tokenRow['allowed_ip'], $clientIp)) {
+                return self::deny(401, 'token_ip_mismatch');
+            }
+            Tokens::touch((int) $tokenRow['id']);
+        } elseif ($requireToken) {
             return self::deny(401, 'token_required');
         }
-        $tokenRow = Tokens::find($token);
-        if (!$tokenRow) {
-            return self::deny(401, 'token_invalid');
-        }
-        if (strtotime((string) $tokenRow['expires_at']) < time()) {
-            return self::deny(401, 'token_expired');
-        }
-        if ((int) $tokenRow['alias_id'] !== (int) $alias['id']) {
-            return self::deny(401, 'token_alias_mismatch');
-        }
-        if ($tokenRow['allowed_ip'] !== '' && !self::ipMatches($tokenRow['allowed_ip'], $clientIp)) {
-            return self::deny(401, 'token_ip_mismatch');
-        }
-        Tokens::touch((int) $tokenRow['id']);
 
         return [
             'ok' => true,
@@ -80,6 +91,7 @@ final class AccessGuard
                 'name' => (string) $alias['origin_name'],
                 'type' => (string) ($alias['origin_type'] ?? 'a'),
                 'host_header' => (string) ($alias['origin_host_header'] ?? ''),
+                'extra_hosts' => (string) ($alias['origin_extra_hosts'] ?? ''),
             ],
             'token' => $tokenRow,
         ];
@@ -95,19 +107,24 @@ final class AccessGuard
         if ($ip === '' || $ip === '-') return true;
         $limit = (int) SettingsRepository::get('rate_limit_per_minute', Config::get('rate_limit_per_minute', 120));
         if ($limit <= 0) return true;
-        $window = (int) floor(time() / 60);
-        $pdo = Database::pdo();
-        $pdo->prepare(
-            'INSERT INTO rate_limit (client_ip, window_start, hits) VALUES (:ip, :w, 1)
-             ON CONFLICT(client_ip, window_start) DO UPDATE SET hits = hits + 1'
-        )->execute([':ip' => $ip, ':w' => $window]);
-        $stmt = $pdo->prepare('SELECT hits FROM rate_limit WHERE client_ip = :ip AND window_start = :w');
-        $stmt->execute([':ip' => $ip, ':w' => $window]);
-        $hits = (int) ($stmt->fetchColumn() ?: 0);
-        if (random_int(1, 100) === 1) {
-            $pdo->prepare('DELETE FROM rate_limit WHERE window_start < :old')->execute([':old' => $window - 5]);
+        try {
+            $window = (int) floor(time() / 60);
+            $pdo = Database::pdo();
+            $pdo->prepare(
+                'INSERT INTO rate_limit (client_ip, window_start, hits) VALUES (:ip, :w, 1)
+                 ON CONFLICT(client_ip, window_start) DO UPDATE SET hits = hits + 1'
+            )->execute([':ip' => $ip, ':w' => $window]);
+            $stmt = $pdo->prepare('SELECT hits FROM rate_limit WHERE client_ip = :ip AND window_start = :w');
+            $stmt->execute([':ip' => $ip, ':w' => $window]);
+            $hits = (int) ($stmt->fetchColumn() ?: 0);
+            if (random_int(1, 100) === 1) {
+                $pdo->prepare('DELETE FROM rate_limit WHERE window_start < :old')->execute([':old' => $window - 5]);
+            }
+            return $hits <= $limit;
+        } catch (Throwable $e) {
+            error_log('[accessguard] rate_limit falhou, seguindo em fail-open: ' . $e->getMessage());
+            return true;
         }
-        return $hits <= $limit;
     }
 
     private static function ipMatches(string $rule, string $ip): bool
@@ -167,20 +184,27 @@ final class AccessGuard
 
     public static function logAccess(string $host, string $path, int $status, int $bytes, ?int $tokenId, ?int $originId, string $reason): void
     {
-        $stmt = Database::pdo()->prepare(
-            'INSERT INTO access_log (ts, client_ip, host, path, status, bytes, token_id, origin_id, reason)
-             VALUES (:ts, :ip, :host, :path, :status, :bytes, :tok, :orig, :reason)'
-        );
-        $stmt->execute([
-            ':ts' => date('c'),
-            ':ip' => self::clientIp(),
-            ':host' => $host,
-            ':path' => $path,
-            ':status' => $status,
-            ':bytes' => $bytes,
-            ':tok' => $tokenId,
-            ':orig' => $originId,
-            ':reason' => $reason,
-        ]);
+        try {
+            // /live/<user>/<pass>/123.ts e afins carregam credenciais no próprio path.
+            $path = preg_replace('#^/(live|movie|series|hls)/[^/]+/[^/]+/#i', '/$1/*/*/', $path) ?? $path;
+            $path = preg_replace('/([?&](username|password|token|t)=)[^&]*/i', '$1***', $path) ?? $path;
+            $stmt = Database::pdo()->prepare(
+                'INSERT INTO access_log (ts, client_ip, host, path, status, bytes, token_id, origin_id, reason)
+                 VALUES (:ts, :ip, :host, :path, :status, :bytes, :tok, :orig, :reason)'
+            );
+            $stmt->execute([
+                ':ts' => date('c'),
+                ':ip' => self::clientIp(),
+                ':host' => $host,
+                ':path' => $path,
+                ':status' => $status,
+                ':bytes' => $bytes,
+                ':tok' => $tokenId,
+                ':orig' => $originId,
+                ':reason' => $reason,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[accessguard] logAccess falhou: ' . $e->getMessage());
+        }
     }
 }

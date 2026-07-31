@@ -1,0 +1,414 @@
+<?php
+
+/**
+ * Sessão LÓGICA da própria CDN.
+ *
+ * Request != conexão. Um player abre dezenas de requests HLS por minuto e o
+ * XUI enxerga isso como uma sessão só (ou nem enxerga, no caso de direct
+ * source). Aqui a CDN passa a ter contador PRÓPRIO, independente do XUI:
+ *
+ *  - agrupa requests correlatos (mesmo usuário + IP + player + tipo + stream)
+ *    numa sessão com início, atividade, idle timeout e encerramento;
+ *  - deduplica bursts de HLS (todos caem na mesma session_key);
+ *  - conta conexões ativas mesmo quando o XUI não vê nada (direct source).
+ *
+ * Custo por request: 1 UPSERT (open) + 1 UPDATE (close). Nada de SELECT
+ * pesado no caminho do stream.
+ */
+final class CdnSession
+{
+    /** Timeout de ociosidade por tipo de consumo (segundos). */
+    public const IDLE = [
+        'playlist' => 180,   // get.php / m3u — o player baixa e some
+        'api'      => 180,   // player_api / xmltv / panel_api
+        'live'     => 45,    // live + segmentos do live
+        'movie'    => 120,
+        'series'   => 120,
+        'hls'      => 45,
+        'other'    => 60,
+    ];
+
+    /**
+     * Janela expandida para consumo DIRECT de VOD.
+     *
+     * Em IBO Player / XCIPTV um filme/série pode virar um único request longo
+     * ou um fetch inicial seguido de buffer local. Se a CDN encerrar a sessão
+     * com 120s, o painel perde a trilha mesmo com o app ainda reproduzindo.
+     */
+    public const DIRECT_IDLE = [
+        'movie'  => 7200,
+        'series' => 7200,
+        'other'  => 1800,
+    ];
+
+    public static function effectiveExpirySql(string $table = 'cdn_sessions'): string
+    {
+        return '(CASE
+            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = "movie"
+                THEN ' . $table . '.last_seen_epoch + MAX(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['movie'] . ')
+            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = "series"
+                THEN ' . $table . '.last_seen_epoch + MAX(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['series'] . ')
+            WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = "other"
+                THEN ' . $table . '.last_seen_epoch + MAX(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['other'] . ')
+            ELSE ' . $table . '.last_seen_epoch + ' . $table . '.idle_timeout
+        END)';
+    }
+
+    public static function activeWhereSql(int $now, string $table = 'cdn_sessions'): string
+    {
+        // O CASE do expiry não é indexável: o SQLite varria a tabela inteira em
+        // TODO COUNT do painel. A maior janela possível é DIRECT_IDLE['movie'],
+        // então este pré-filtro é um superconjunto seguro (não muda resultado)
+        // e usa idx_cdnsess_status(status, last_seen_epoch).
+        $floor = $now - (int) max(self::DIRECT_IDLE) - (int) max(self::IDLE);
+        return '(' . $table . '.status = "active")
+            AND ' . $table . '.last_seen_epoch >= ' . $floor . '
+            AND (
+                ' . $table . '.active_requests > 0
+                OR ' . self::effectiveExpirySql($table) . ' >= ' . $now . '
+            )';
+    }
+
+    /**
+     * Tráfego gerado dentro da própria VPS (smoke, curl local, dev harness) não
+     * pode poluir o painel ao vivo do operador.
+     */
+    public static function publicClientWhereSql(string $table = 'cdn_sessions'): string
+    {
+        return '(' . $table . '.client_ip NOT IN ("127.0.0.1", "::1", "", "-"))';
+    }
+
+    public static function enabled(): bool
+    {
+        return (int) SettingsRepository::get('cdn_sessions_enabled', 1) === 1;
+    }
+
+    /** Agrupa route_kind em "tipo de conexão" da CDN. */
+    public static function kindOf(RequestContext $ctx): string
+    {
+        switch ($ctx->routeKind) {
+            case 'm3u':     return 'playlist';
+            case 'api':     return 'api';
+            case 'live':    return 'live';
+            case 'movie':   return 'movie';
+            case 'series':  return 'series';
+            case 'hls':     return 'hls';
+            case 'segment': return $ctx->streamId ? 'live' : 'other';
+        }
+        return 'other';
+    }
+
+    /**
+     * Chave estável da sessão. Playlist/API não dependem de stream_id;
+     * consumo de vídeo é por stream para separar duas telas do mesmo login.
+     */
+    public static function keyFor(RequestContext $ctx): string
+    {
+        $kind = self::kindOf($ctx);
+        $streamPart = in_array($kind, ['playlist', 'api'], true) ? '-' : (string) ((int) $ctx->streamId);
+        $identity = $ctx->username !== '' ? $ctx->username : ('fp:' . substr($ctx->fingerprint, 0, 16));
+        return substr(hash('sha256', implode('|', [
+            $identity,
+            $ctx->clientIp,
+            strtolower(substr($ctx->userAgent, 0, 120)),
+            $kind,
+            $streamPart,
+        ])), 0, 32);
+    }
+
+    /** Abre (ou reaproveita) a sessão local deste request. Retorna a chave. */
+    public static function touch(RequestContext $ctx): string
+    {
+        if (!self::enabled() || ($ctx->username === '' && $ctx->fingerprint === '')) {
+            return '';
+        }
+        $kind = self::kindOf($ctx);
+        $key = self::keyFor($ctx);
+        $now = time();
+        $idle = self::IDLE[$kind] ?? 60;
+        self::retireSuperseded($ctx, $key, $kind, $now);
+        $ok = Database::write(static function (PDO $pdo) use ($ctx, $key, $kind, $now, $idle): void {
+            $pdo->prepare(
+                'INSERT INTO cdn_sessions
+                   (session_key, username, credential_fingerprint, client_ip, user_agent, public_host,
+                    session_kind, last_route_kind, stream_id, started_at, started_epoch,
+                    last_seen_at, last_seen_epoch, idle_timeout, status, requests, last_request_id)
+                 VALUES (:k,:u,:f,:ip,:ua,:h,:kind,:rk,:sid,:sa,:se,:la,:le,:idle,"active",1,:rid)
+                 ON CONFLICT(session_key) DO UPDATE SET
+                   last_seen_at=excluded.last_seen_at,
+                   last_seen_epoch=excluded.last_seen_epoch,
+                   last_route_kind=excluded.last_route_kind,
+                   public_host=excluded.public_host,
+                   idle_timeout=excluded.idle_timeout,
+                   active_requests=cdn_sessions.active_requests + 1,
+                   last_open_epoch=excluded.last_seen_epoch,
+                   requests=cdn_sessions.requests + 1,
+                   last_request_id=excluded.last_request_id,
+                   status="active",
+                   close_reason="",
+                   ended_epoch=0,
+                   started_epoch=CASE WHEN cdn_sessions.status <> "active"
+                        OR (excluded.last_seen_epoch - cdn_sessions.last_seen_epoch) > cdn_sessions.idle_timeout
+                        THEN excluded.started_epoch ELSE cdn_sessions.started_epoch END,
+                   started_at=CASE WHEN cdn_sessions.status <> "active"
+                        OR (excluded.last_seen_epoch - cdn_sessions.last_seen_epoch) > cdn_sessions.idle_timeout
+                        THEN excluded.started_at ELSE cdn_sessions.started_at END'
+            )->execute([
+                ':k' => $key, ':u' => $ctx->username, ':f' => $ctx->fingerprint,
+                ':ip' => $ctx->clientIp, ':ua' => substr($ctx->userAgent, 0, 200), ':h' => $ctx->publicHost,
+                ':kind' => $kind, ':rk' => $ctx->routeKind, ':sid' => (int) $ctx->streamId,
+                ':sa' => date('c', $now), ':se' => $now,
+                ':la' => date('c', $now), ':le' => $now, ':idle' => $idle,
+                ':rid' => $ctx->requestId,
+            ]);
+        }, 'cdnsession.touch');
+        return $ok ? $key : '';
+    }
+
+    /**
+     * Se o mesmo app/dispositivo abriu outro filme/serie, a sessao anterior
+     * nao pode continuar contando como conexao ativa. Ela deve virar "superseded".
+     */
+    private static function retireSuperseded(RequestContext $ctx, string $currentKey, string $kind, int $now): void
+    {
+        if (!in_array($kind, ['movie', 'series'], true)) {
+            return;
+        }
+        Database::run(
+            'UPDATE cdn_sessions
+                SET status = "closed",
+                    close_reason = "superseded",
+                    ended_epoch = :now
+              WHERE username = :u
+                AND client_ip = :ip
+                AND user_agent = :ua
+                AND session_kind = :kind
+                AND session_key <> :k
+                AND stream_id <> :sid
+                AND status = "active"',
+            [
+                ':now' => $now,
+                ':u' => $ctx->username,
+                ':ip' => $ctx->clientIp,
+                ':ua' => substr($ctx->userAgent, 0, 200),
+                ':kind' => $kind,
+                ':k' => $currentKey,
+                ':sid' => (int) $ctx->streamId,
+            ],
+            'cdnsession.superseded'
+        );
+    }
+
+    /** Fecha o ciclo do request dentro da sessão (bytes, erro, direct source). */
+    public static function record(string $key, int $status, int $bytes, string $directHost = ''): void
+    {
+        if ($key === '') { return; }
+        Database::write(static function (PDO $pdo) use ($key, $status, $bytes, $directHost): void {
+            $pdo->prepare(
+                'UPDATE cdn_sessions
+                    SET bytes = bytes + :b,
+                        errors = errors + :e,
+                        last_seen_at = :la,
+                        last_seen_epoch = :le,
+                        active_requests = CASE WHEN active_requests > 0 THEN active_requests - 1 ELSE 0 END,
+                        last_close_epoch = :lce,
+                        idle_timeout = CASE
+                            WHEN :dh <> "" AND session_kind = "movie" THEN MIN(idle_timeout, 45)
+                            WHEN :dh <> "" AND session_kind = "series" THEN MIN(idle_timeout, 45)
+                            WHEN :dh <> "" AND session_kind = "other" THEN MIN(idle_timeout, 45)
+                            ELSE idle_timeout
+                        END,
+                        status = "active",
+                        close_reason = "",
+                        ended_epoch = 0,
+                        direct_source = CASE WHEN :dh <> "" THEN 1 ELSE direct_source END,
+                        direct_host = CASE WHEN :dh2 <> "" THEN :dh3 ELSE direct_host END
+                  WHERE session_key = :k'
+            )->execute([
+                ':b' => max(0, $bytes), ':e' => $status >= 400 ? 1 : 0,
+                ':la' => date('c'), ':le' => time(),
+                ':lce' => time(),
+                ':dh' => $directHost, ':dh2' => $directHost, ':dh3' => $directHost,
+                ':k' => $key,
+            ]);
+        }, 'cdnsession.record');
+    }
+
+    /** Marca por qual músculo (LB) esta sessão lógica está passando. */
+    public static function tagLb(string $key, int $lbId): void
+    {
+        if ($key === '' || $lbId <= 0) { return; }
+        Database::run(
+            'UPDATE cdn_sessions SET lb_id = :l WHERE session_key = :k AND lb_id <> :l2',
+            [':l' => $lbId, ':k' => $key, ':l2' => $lbId],
+            'cdnsession.tag_lb'
+        );
+    }
+
+    /**
+     * Heartbeat leve para request longo: renova a sessão enquanto o stream
+     * ainda está saindo, sem esperar o request terminar.
+     */
+    public static function heartbeat(string $key, string $directHost = ''): void
+    {
+        if ($key === '') { return; }
+        Database::write(static function (PDO $pdo) use ($key, $directHost): void {
+            $pdo->prepare(
+                'UPDATE cdn_sessions
+                    SET last_seen_at = :la,
+                        last_seen_epoch = :le,
+                        active_requests = CASE WHEN active_requests < 1 THEN 1 ELSE active_requests END,
+                        idle_timeout = CASE
+                            WHEN :dh <> "" AND session_kind = "movie" AND idle_timeout < ' . self::DIRECT_IDLE['movie'] . '
+                                THEN ' . self::DIRECT_IDLE['movie'] . '
+                            WHEN :dh <> "" AND session_kind = "series" AND idle_timeout < ' . self::DIRECT_IDLE['series'] . '
+                                THEN ' . self::DIRECT_IDLE['series'] . '
+                            WHEN :dh <> "" AND session_kind = "other" AND idle_timeout < ' . self::DIRECT_IDLE['other'] . '
+                                THEN ' . self::DIRECT_IDLE['other'] . '
+                            ELSE idle_timeout
+                        END,
+                        status = "active",
+                        close_reason = "",
+                        ended_epoch = 0,
+                        direct_source = CASE WHEN :dh <> "" THEN 1 ELSE direct_source END,
+                        direct_host = CASE WHEN :dh2 <> "" THEN :dh3 ELSE direct_host END
+                  WHERE session_key = :k'
+            )->execute([
+                ':la' => date('c'),
+                ':le' => time(),
+                ':dh' => $directHost,
+                ':dh2' => $directHost,
+                ':dh3' => $directHost,
+                ':k' => $key,
+            ]);
+        }, 'cdnsession.heartbeat', 2);
+    }
+
+    /** Conexões ativas AGORA contadas pela CDN (não pelo XUI). */
+    public static function activeCount(string $username): int
+    {
+        $st = Database::pdo()->prepare(
+            'SELECT COUNT(*) FROM cdn_sessions
+              WHERE username = :u AND ' . self::activeWhereSql(time()) . '
+                AND ' . self::publicClientWhereSql() . '
+                AND session_kind NOT IN ("playlist","api")
+            '
+        );
+        $st->execute([':u' => $username]);
+        return (int) $st->fetchColumn();
+    }
+
+    /** @return array<string,int> username => conexões ativas locais */
+    public static function activeCounts(): array
+    {
+        $rows = Database::pdo()->query(
+            'SELECT username, COUNT(*) AS c FROM cdn_sessions
+              WHERE ' . self::activeWhereSql(time()) . '
+                AND ' . self::publicClientWhereSql() . '
+                AND session_kind NOT IN ("playlist","api")
+              GROUP BY username'
+        )->fetchAll();
+        $out = [];
+        foreach ($rows as $r) { $out[(string) $r['username']] = (int) $r['c']; }
+        return $out;
+    }
+
+    /** Job: encerra sessões ociosas e devolve estatísticas auditáveis. */
+    public static function sweep(array &$stats): void
+    {
+        $pdo = Database::pdo();
+        $now = time();
+        JobRunner::step('encerrar_ociosas');
+
+        Database::run(
+            'UPDATE cdn_sessions
+                SET idle_timeout = CASE
+                    WHEN session_kind = "movie" THEN 45
+                    WHEN session_kind = "series" THEN 45
+                    WHEN session_kind = "other" THEN 45
+                    ELSE idle_timeout
+                END
+              WHERE status = "active"
+                AND direct_source = 1
+                AND active_requests = 0
+                AND session_kind IN ("movie","series","other")
+                AND idle_timeout > 45',
+            [],
+            'cdnsession.normalize_direct_idle'
+        );
+
+        // Era 1 SELECT de TODAS as sessões ativas + 1 UPDATE por linha (N+1 em
+        // cima do arquivo que o stream está escrevendo — fonte direta de
+        // "database is locked"). Agora é UM UPDATE conjunto com a mesma regra
+        // de expiração usada nas leituras do painel.
+        $expiry = self::effectiveExpirySqlForSweep();
+        $closed = 0;
+        Database::write(static function (PDO $pdo) use ($expiry, $now, &$closed): void {
+            $st = $pdo->prepare(
+                'UPDATE cdn_sessions
+                    SET status = "closed", close_reason = "idle_timeout", ended_epoch = :now
+                  WHERE status = "active" AND ' . $expiry . ' < :now2'
+            );
+            $st->execute([':now' => $now, ':now2' => $now]);
+            $closed = $st->rowCount();
+        }, 'cdnsession.sweep');
+
+        // Retenção curta: sessão encerrada há mais de 6h já virou histórico do
+        // proxy_request_events; não precisa ficar no contador ao vivo.
+        JobRunner::step('retencao');
+        Database::write(static function (PDO $pdo) use ($now): void {
+            $pdo->exec('DELETE FROM cdn_sessions WHERE status = \'closed\' AND ended_epoch < ' . ($now - 21600));
+        }, 'cdnsession.retention');
+
+        JobRunner::step('contar_ativas');
+        $active = (int) $pdo->query(
+            'SELECT COUNT(*) FROM cdn_sessions WHERE ' . self::activeWhereSql($now)
+        )->fetchColumn();
+
+        $stats['processed'] += $closed + $active;
+        $stats['details'] = ['closed' => $closed, 'active' => $active];
+    }
+
+    /**
+     * Expiração para o sweep: mesma regra do painel, mais o teto curto para
+     * tráfego interno (smoke/curl local não pode segurar sessão por 2h).
+     */
+    private static function effectiveExpirySqlForSweep(string $table = 'cdn_sessions'): string
+    {
+        $internal = '(' . $table . '.client_ip IN ("127.0.0.1", "::1", "", "-"))';
+        return '(CASE
+            WHEN ' . $internal . '
+                THEN ' . $table . '.last_seen_epoch + MIN(' . $table . '.idle_timeout, 180)
+            ELSE ' . self::effectiveExpirySql($table) . '
+        END)';
+    }
+
+    /** @return array<int,array<string,mixed>> sessões ao vivo (painel) */
+    public static function live(array $filters = [], int $limit = 200): array
+    {
+        $key = 'sessions_' . md5(json_encode([$filters, $limit], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        return Cache::remember($key, 2, static function () use ($filters, $limit): array {
+            $sql = 'SELECT * FROM cdn_sessions WHERE ' . self::activeWhereSql(time());
+            $params = [];
+            if (empty($filters['include_internal'])) { $sql .= ' AND ' . self::publicClientWhereSql(); }
+            if (!empty($filters['username'])) { $sql .= ' AND username LIKE :u'; $params[':u'] = '%' . $filters['username'] . '%'; }
+            if (!empty($filters['kind'])) { $sql .= ' AND session_kind = :k'; $params[':k'] = $filters['kind']; }
+            if (!empty($filters['ip'])) { $sql .= ' AND client_ip LIKE :i'; $params[':i'] = '%' . $filters['ip'] . '%'; }
+            if (!empty($filters['direct'])) { $sql .= ' AND direct_source = 1'; }
+            $sql .= ' ORDER BY last_seen_epoch DESC LIMIT ' . max(1, min(1000, $limit));
+            $stmt = Database::pdo()->prepare($sql);
+            $stmt->execute($params);
+            return $stmt->fetchAll();
+        });
+    }
+
+    public static function forUser(string $username, int $limit = 50): array
+    {
+        $st = Database::pdo()->prepare(
+            'SELECT * FROM cdn_sessions WHERE username = :u
+              ORDER BY status ASC, last_seen_epoch DESC LIMIT ' . max(1, min(200, $limit))
+        );
+        $st->execute([':u' => $username]);
+        return $st->fetchAll();
+    }
+}

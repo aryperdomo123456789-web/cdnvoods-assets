@@ -175,3 +175,7 @@ th {
         align-items: flex-start;
     }
 }
+
+select{width:100%;border:1px solid var(--line);border-radius:12px;background:rgba(3,7,18,.58);color:var(--text);padding:12px 14px;font-size:15px}
+form.inline{display:inline}
+button.danger{background:linear-gradient(135deg,#f87171,#ef4444);color:#1b0505}

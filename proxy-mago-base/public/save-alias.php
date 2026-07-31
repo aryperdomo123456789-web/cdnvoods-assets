@@ -17,6 +17,7 @@ $data = [
     'origin_id' => (int) ($_POST['origin_id'] ?? 0),
     'is_primary' => !empty($_POST['is_primary']),
     'active' => !empty($_POST['active']),
+    'require_token' => !empty($_POST['require_token']),
 ];
 
 if ($data['hostname'] === '' || $data['origin_id'] < 1) {

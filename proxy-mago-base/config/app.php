@@ -8,6 +8,9 @@ return [
     'nginx_conf_link' => '/etc/nginx/sites-enabled/proxy-mago.conf',
     'php_fpm_socket' => '/run/php/php8.1-fpm.sock',
     'panel_path' => '/opt/proxy-mago/proxy-mago-base',
+    'ssl_cert_path' => '/etc/ssl/cloudflare/cdnvoods.pem',
+    'ssl_key_path' => '/etc/ssl/cloudflare/cdnvoods.key',
+    'force_https' => false, // nunca forçar HTTPS: domínios públicos de clientes rodam em http puro
     'allowed_user_agent' => '',
     'token_ttl' => 21600, // 6h por padrao
     'rate_limit_per_minute' => 240,
