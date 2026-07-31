@@ -34,6 +34,7 @@ Regras: single XUI manda; documento `2026-07-31` vence documento antigo; execuç
 - (RESOLVIDO 2026-07-31) Contagem `direct source` em troca de filme: `CdnSession::supersedePrevious()` fecha a sessão anterior de `movie`/`series` do mesmo `username|fingerprint + IP + app` como `close_reason='superseded'`. Provado por `bin/smoke-lb.sh` (etapa 4): contador fica em 1 na troca de filme. Live continua contando por tela, de propósito.
 - Frescor do painel: `restream-data.php` tem `_meta` (idade, query_ms, lock retries); `lb-data.php` só tem `ts`, sem `data_age_ms` nem aviso de modo degradado.
 - `xui_sync_streams`: volume real (483k+ streams) exige confirmação de estabilidade sob cron no ambiente real.
+- Trilha quente ainda em SQLite: `cdn_sessions`, `proxy_request_events` e `proxy_user_runtime` são os três primeiros alvos do `S2-P0-4` (abstração antes de PostgreSQL).
 - (RESOLVIDO 2026-07-31) Smoke de LB: `bin/smoke-lb.sh` cobre score dos nós, decisão de rota, queda de LB com fallback para o cérebro e supersede de VOD.
 
 ### Fechado em 2026-07-31 (Sprint 2 — P0)
@@ -41,6 +42,12 @@ Regras: single XUI manda; documento `2026-07-31` vence documento antigo; execuç
 - `S2-P0-2` enforcement de limite provado ponta a ponta: `alert` não bloqueia, `block` recusa acima do plano, playlist/API nunca ocupa slot, tolerância protege reconexão, fechar tela devolve acesso, estouro visível como divergência `above_limit`. Prova: `bin/smoke-limit.sh` (12 ok / 0 falhas).
 - `S2-P0-3` uptime real: graça de retomada por tipo de consumo (não só direct), válida também para sessão ativa com buraco de atividade, e `record()` preenchendo host efetivo de direct. Prova: `bin/smoke-uptime.sh` (14 ok / 0 falhas).
 - Detalhe técnico: `docs/S2_P0_ENFORCEMENT_2026-07-31.md`.
+
+### Fechado em 2026-07-31 (Sprint 2 — pós-P0: runtime ao vivo)
+- `in_flight` preso não conta mais como conexão viva (`CdnSession::IN_FLIGHT_MAX` + etapa `soltar_in_flight` no sweep); primeiro request da sessão agora nasce como em voo (o `INSERT` de `touch()` não gravava `active_requests`).
+- KPI sem oscilação: rollup vale por IDADE (`ROLLUP_MAX_AGE`), zero fresco é zero, rollup velho vira modo degradado explícito (`rollup_stale`, `rollup_age_s`) com recontagem única.
+- Resumo do painel depende só do rollup leve (`users_runtime_active`, `over_limit_now`); sem COUNT em `proxy_user_runtime` por tick.
+- Prova: `bin/smoke-runtime-live.sh` (14 ok / 0 falhas). Detalhe: `docs/S2_POS_P0_RUNTIME_2026-07-31.md`.
 
 ### Crítico / não iniciado
 - Runtime quente ainda 100% em SQLite (sessão, requests, auditoria, jobs). Sprint 2 define PostgreSQL como destino oficial; hoje não há camada de abstração — `Database.php` é o único ponto com menção a Postgres.
