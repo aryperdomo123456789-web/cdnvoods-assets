@@ -109,6 +109,19 @@ session_write_close();
             </table>
         </section>
     </section>
+    <section class="card full">
+        <h2>Host final do direct source — quem entrega e quem barra a CDN</h2>
+        <p class="muted">Separa a culpa: <b>host_final</b> = host externo recusa/ignora a CDN; <b>catalogo_api</b> = catálogo do XUI desatualizado. Falha de série não é automaticamente bug do proxy.</p>
+        <div id="dhkpi" class="muted">carregando…</div>
+        <table class="compact">
+            <thead><tr>
+                <th>Host final</th><th>Veredito</th><th>Culpa</th><th>Hops</th><th>Falha</th>
+                <th>Usuários</th><th>Streams</th><th>Visto</th><th>Leitura</th>
+            </tr></thead>
+            <tbody id="dhbody"><tr><td colspan="9">carregando…</td></tr></tbody>
+        </table>
+    </section>
+
 </main>
 
 <script>
@@ -412,6 +425,32 @@ bootLoop(tickSessions, POLL_SESSIONS_MS, (e) => {
   failRow('sessbody', 8, 'falha ao carregar sessões: ' + e.message);
   failRow('directbody', 8, 'falha ao carregar direct: ' + e.message);
 });
+
+const VERDICT_CLS = {ok:'ok', flaky:'warn', blocked:'bad', unreachable:'bad', degraded:'warn', catalog_stale:'warn', unknown:'info'};
+
+async function tickDirectHealth() {
+  if ($('pause').checked) return;
+  const d = await getJson('/restream-data.php?view=direct_health&minutes=60&limit=40');
+  const rows = d.hosts || [];
+  const v = d.verdicts || {};
+  $('dhkpi').innerHTML = Object.keys(v).filter(k => Number(v[k]) > 0).length
+    ? Object.keys(v).filter(k => Number(v[k]) > 0)
+        .map(k => `<span class="tag ${VERDICT_CLS[k] || 'info'}">${esc(k)}: ${esc(v[k])}</span>`).join(' ')
+    : '<span class="muted">nenhum host final observado na última hora</span>';
+  $('dhbody').innerHTML = rows.length ? rows.map(r => `<tr>
+    <td class="mono">${esc(r.host)}</td>
+    <td><span class="tag ${VERDICT_CLS[r.verdict] || 'info'}">${esc(r.verdict)}</span></td>
+    <td>${esc(r.blame)}</td>
+    <td>${esc(r.hops)}</td>
+    <td>${esc(r.fail_rate)}%</td>
+    <td>${esc(r.users)}</td>
+    <td>${esc(r.streams)}</td>
+    <td class="muted">${esc(ago(r.last_epoch))}</td>
+    <td class="muted">${esc(r.explain)}</td>
+  </tr>`).join('') : '<tr><td colspan="9" class="muted">nenhum hop de direct source na janela</td></tr>';
+}
+
+bootLoop(tickDirectHealth, 30000, (e) => failRow('dhbody', 9, 'falha ao carregar saúde de host final: ' + e.message));
 </script>
 </body>
 </html>

@@ -63,3 +63,32 @@ disjuntor FEITO, 1.6 pacote padrão de LB FEITO (`bin/lb-install.sh` +
 baseline de carga no `LB-02` real e preencher os números em
 `docs/BASELINE_CARGA_LB.md`. Redis (Fase 2), PostgreSQL (Fase 3) e motor Go
 (Fase 4) só depois disso.
+
+## 5. Triagem de falha de série (2026-07-31) — não é tudo bug do proxy
+
+`app/DirectHostHealth.php` fecha o furo de diagnóstico: toda falha de série era
+tratada como falha do proxy. Agora o veredito é por HOST FINAL, com culpa
+explícita, e vive em `?view=direct_health` (e no card "Host final do direct
+source" em `public/restream.php`, polling de 30s):
+
+| veredito | culpa | leitura operacional |
+|---|---|---|
+| `ok` | nenhum | host externo aceita o fetch da CDN |
+| `flaky` | host_final | entrega, mas falha parte das vezes |
+| `blocked` | host_final | 401/403/451 — host externo barra a CDN; não mexer no proxy |
+| `unreachable` | host_final | sem resposta (timeout/DNS/rota) |
+| `degraded` | host_final | 5xx do lado do host externo |
+| `catalog_stale` | catalogo_api | 404/410 — conteúdo saiu de lá, corrigir catálogo no XUI |
+| `unknown` | nenhum | amostra pequena na janela |
+
+Triagem de um conteúdo específico: `?view=direct_stream&stream_id=<id>` devolve
+`triage.blame` em `catalogo_api` | `host_final` | `sessao`.
+
+Compatibilidade de `get_series_info`: `app/XuiSeriesCompat` já reconstrói
+`seasons` a partir de `episodes` quando a origem devolve `seasons` vazio
+(chamado em `public/proxy.php`), então catálogo torto de temporada não derruba
+mais o app.
+
+Provas: `bin/smoke-direct-health.sh` → 9 ok / 0 falhas.
+Nada disso toca o caminho quente do player: é leitura de painel/job sobre
+`direct_source_hops` e `direct_stream_state`.

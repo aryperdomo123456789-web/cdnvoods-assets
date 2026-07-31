@@ -14,6 +14,7 @@
  *  ?view=users     parque completo de usuários do XUI + conexões em uso agora
  *  ?view=divergences  quadro de divergências abertas (CDN x XUI x limite)
  *  ?view=direct    rastreio de direct source (hosts finais e hops bloqueados)
+ *  ?view=direct_health veredito por host final: ok, bloqueado, instável, catálogo velho
  *  ?view=timeline  TRILHA ÚNICA (uma linha por sessão: quem, de onde, por qual
  *                  host público, por qual LB, direct source, divergência)
  *  ?view=lb        estado do balanceamento + histórico de decisões por usuário
@@ -136,9 +137,19 @@ try {
                 ], $limit),
                 'top_hosts' => DirectCatalog::topHosts(15, 10),
                 'failures' => DirectCatalog::failuresByHost(60, 20),
+                'hosts_health' => DirectHostHealth::hosts(60, 40),
+                'hosts_verdicts' => DirectHostHealth::summary(60),
                 'users' => DirectCatalog::activeUsers(50),
                 'blocked' => DirectSource::blocked(60, 40),
                 'divergences' => Divergence::open(['direct' => true], 50),
+            ];
+            break;
+        case 'direct_health':
+            // Separa culpa: host final externo x catálogo/API x sessão.
+            $out = [
+                'hosts' => DirectHostHealth::hosts((int) ($_GET['minutes'] ?? 60), max(5, min(80, $limit))),
+                'verdicts' => DirectHostHealth::summary((int) ($_GET['minutes'] ?? 60)),
+                'legend' => DirectHostHealth::VERDICTS,
             ];
             break;
         case 'direct_stream':
@@ -146,6 +157,7 @@ try {
             $out = [
                 'state' => DirectCatalog::forStream($sid),
                 'hops' => DirectSource::forStream($sid, 50),
+                'triage' => DirectHostHealth::triageStream($sid),
             ];
             break;
         case 'user':
