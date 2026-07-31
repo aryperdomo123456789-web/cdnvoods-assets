@@ -157,10 +157,26 @@ if ($u) {
     $bad++;
 }
 
-line('8. totais do parque (é isso que o painel mostra)');
-foreach (UserIntelligence::totals() as $k => $v) { printf("   %-20s %s\n", $k, is_scalar($v) ? $v : json_encode($v)); }
+line('8. jobs de consolidação (o painel lê KPI consolidado, não conta na hora)');
+foreach ([
+    'consolidate_runtime' => static fn (array &$s) => RestreamRuntime::consolidate($s),
+    'metrics_rollup_light' => static fn (array &$s) => RestreamRuntime::metricsRollupLight($s),
+] as $job => $fn) {
+    $r = JobRunner::run($job, 'lab', $fn);
+    printf("   %-22s status=%s processados=%d falhas=%d %dms %s\n", $job, $r['status'],
+        $r['processed'], $r['failed'], $r['duration_ms'], (string) $r['error']);
+    check($r['status'] === 'ok', 'job ' . $job);
+}
+Cache::flush();
 
-line('9. saúde do direct source');
+line('9. totais do parque (é isso que o painel mostra)');
+$t = UserIntelligence::totalsFresh();
+foreach ($t as $k => $v) { printf("   %-20s %s\n", $k, is_scalar($v) ? $v : json_encode($v)); }
+check((int) $t['connections_video'] > 0, 'KPI de conexões de vídeo no painel', '=' . $t['connections_video']);
+check((int) $t['sessions_fetch'] > 0, 'KPI de playlist/api no painel', '=' . $t['sessions_fetch']);
+check((int) $t['users_online'] > 0, 'KPI de usuários online', '=' . $t['users_online']);
+
+line('10. saúde do direct source');
 $sum = DirectHostHealth::summary(60);
 printf("   %s\n", json_encode($sum, JSON_UNESCAPED_UNICODE));
 foreach (DirectHostHealth::hosts(60, 10) as $h2) {
@@ -169,7 +185,7 @@ foreach (DirectHostHealth::hosts(60, 10) as $h2) {
         (string) ($h2['verdict'] ?? '-'), (string) ($h2['blame'] ?? '-'), (string) ($h2['samples'] ?? 0));
 }
 
-line('10. nós de LB registrados');
+line('11. nós de LB registrados');
 $nodes = LbNode::all();
 printf("   nós=%d\n", count($nodes));
 foreach ($nodes as $n) {
