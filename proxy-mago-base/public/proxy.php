@@ -267,15 +267,19 @@ try {
             $ctx['replacements'][] = '"https_port":"443"';
         }
         $forced = '';
+        $extraHeaders = [];
         if (preg_match('#get\.php$#i', $path)) {
             $output = strtolower((string) ($query['output'] ?? ''));
             $forced = ($output === 'hls' || $output === 'm3u8')
                 ? 'application/vnd.apple.mpegurl'
                 : 'audio/x-mpegurl';
+            // get.php é DOWNLOAD de lista, não reprodução: sem isso o navegador
+            // tenta abrir a playlist no player e o usuário vê tela de erro.
+            $extraHeaders[] = 'Content-Disposition: attachment; filename="playlist.m3u"';
         } elseif (preg_match('#\.m3u8?$#i', $path)) {
             $forced = 'application/vnd.apple.mpegurl';
         }
-        $result = StreamProxy::streamTextual($origin, $path, $query, $ctx, $forced);
+        $result = StreamProxy::streamTextual($origin, $path, $query, $ctx, $forced, $extraHeaders);
         $inconsistency = '';
         $reason = 'textual';
         if (CredentialGuard::tripped() || StreamProxy::swapAborted()) {
