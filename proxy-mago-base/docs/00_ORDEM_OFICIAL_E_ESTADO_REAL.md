@@ -36,6 +36,12 @@ Regras: single XUI manda; documento `2026-07-31` vence documento antigo; execuç
 - `xui_sync_streams`: volume real (483k+ streams) exige confirmação de estabilidade sob cron no ambiente real.
 - (RESOLVIDO 2026-07-31) Smoke de LB: `bin/smoke-lb.sh` cobre score dos nós, decisão de rota, queda de LB com fallback para o cérebro e supersede de VOD.
 
+### Fechado em 2026-07-31 (Sprint 2 — P0)
+- `S2-P0-1` trava CDN por IP endurecida: octeto inválido recusado, `/0` correto em 32 bits, curinga em qualquer octeto final, IPv6 exato e em CIDR, regra inválida reportada no painel, veredito explicável (`UserIpLock::explain()`) no log de bloqueio. Prova: `bin/smoke-ip-lock.sh` (22 ok / 0 falhas).
+- `S2-P0-2` enforcement de limite provado ponta a ponta: `alert` não bloqueia, `block` recusa acima do plano, playlist/API nunca ocupa slot, tolerância protege reconexão, fechar tela devolve acesso, estouro visível como divergência `above_limit`. Prova: `bin/smoke-limit.sh` (12 ok / 0 falhas).
+- `S2-P0-3` uptime real: graça de retomada por tipo de consumo (não só direct), válida também para sessão ativa com buraco de atividade, e `record()` preenchendo host efetivo de direct. Prova: `bin/smoke-uptime.sh` (14 ok / 0 falhas).
+- Detalhe técnico: `docs/S2_P0_ENFORCEMENT_2026-07-31.md`.
+
 ### Crítico / não iniciado
 - Runtime quente ainda 100% em SQLite (sessão, requests, auditoria, jobs). Sprint 2 define PostgreSQL como destino oficial; hoje não há camada de abstração — `Database.php` é o único ponto com menção a Postgres.
 - Enforcement como fonte de verdade (limite de conexão + trava por IP) depende da contagem estar perfeita; com a inflação de `movie` acima, bloqueio pode ficar injusto.
@@ -45,8 +51,9 @@ Regras: single XUI manda; documento `2026-07-31` vence documento antigo; execuç
 1. ~~`S1-P0` — supersede de sessão em `movie`/`series`~~ FEITO em `app/CdnSession.php`.
 2. ~~`S1-P1` — `bin/smoke-lb.sh`~~ FEITO (5 ok / 0 falhas neste ambiente, sem LB cadastrado).
 3. ~~`S1-P2` — `_meta` com `data_age_ms` + aviso de modo degradado~~ FEITO em `app/Freshness.php`, `public/lb-data.php`, `public/restream-data.php`, `public/lb.php`, `public/restream.php` (`bin/smoke-fresh.sh`: 8 ok / 0 falhas).
-4. `S1-P3` — instalar `LB-02` real pelo painel e registrar o baseline medido em `docs/BASELINE_CARGA_LB.md`.
-5. `S2-P0-4` — abstração de persistência (config / runtime quente / auditoria / espelho XUI) antes de qualquer migração para PostgreSQL.
+4. ~~`S2-P0-1`/`S2-P0-2`/`S2-P0-3` — trava por IP, limite e uptime~~ FEITO (`docs/S2_P0_ENFORCEMENT_2026-07-31.md`).
+5. `S1-P3` — instalar `LB-02` real pelo painel e registrar o baseline medido em `docs/BASELINE_CARGA_LB.md`.
+6. `S2-P0-4` — abstração de persistência (config / runtime quente / auditoria / espelho XUI) antes de qualquer migração para PostgreSQL.
 
 Nada de migrar banco antes de fechar 1 e 2: contagem errada em banco novo continua contagem errada.
 
