@@ -74,6 +74,8 @@ if ($start !== false) {
     // Fim do bloco: próxima declaração de função no arquivo.
     $next = strpos($dbSrc, "\n    private static function ", $start + 10);
     $pgBlock = substr($dbSrc, $start, ($next === false ? strlen($dbSrc) : $next) - $start);
+    // Comentário do próprio bloco cita as armadilhas; só DDL conta.
+    $pgBlock = preg_replace('#^\s*//.*$#m', '', $pgBlock) ?? $pgBlock;
 }
 $missing = [];
 foreach (Sql::HOT_TABLES as $table) {
