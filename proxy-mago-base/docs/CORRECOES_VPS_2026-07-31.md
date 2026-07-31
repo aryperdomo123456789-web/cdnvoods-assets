@@ -1,5 +1,8 @@
 # Correções Aplicadas na VPS — 2026-07-31
 
+> **Fluxo oficial de publicação:** este servidor `45.140.192.237` publica primeiro em `aryperdomo123456789-web/cdnvoods-assets/tree/backup`. Somente depois a branch `backup` promove o mesmo conteúdo para `aryperdomo123456789-web/cdnvoods-assets/tree/main`. Nunca publicar deste servidor diretamente para `main`.
+
+
 Data de referência: sexta-feira, 31/07/2026
 
 ## Escopo obrigatório de ambiente

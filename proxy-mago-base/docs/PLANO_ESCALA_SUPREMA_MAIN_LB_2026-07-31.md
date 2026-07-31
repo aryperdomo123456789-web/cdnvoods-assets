@@ -1,5 +1,8 @@
 # Plano de Escala Suprema — Main + LBs
 
+> **Fluxo oficial de publicação:** este servidor `45.140.192.237` publica primeiro em `aryperdomo123456789-web/cdnvoods-assets/tree/backup`. Somente depois a branch `backup` promove o mesmo conteúdo para `aryperdomo123456789-web/cdnvoods-assets/tree/main`. Nunca publicar deste servidor diretamente para `main`.
+
+
 Data de referencia: `2026-07-31`
 
 Este documento cruza o estado real atual do projeto com a meta de evoluir para

@@ -1,5 +1,8 @@
 # Fluxo do proxy — Fase 1→4
 
+> **Fluxo oficial de publicação:** este servidor `45.140.192.237` publica primeiro em `aryperdomo123456789-web/cdnvoods-assets/tree/backup`. Somente depois a branch `backup` promove o mesmo conteúdo para `aryperdomo123456789-web/cdnvoods-assets/tree/main`. Nunca publicar deste servidor diretamente para `main`.
+
+
 Este documento descreve como o painel esconde a origem XUI e roteia streams
 pelo main público oficial (`cdnvoods.vr766.com`).
 

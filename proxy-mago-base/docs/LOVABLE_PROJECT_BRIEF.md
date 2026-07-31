@@ -1,5 +1,8 @@
 # Lovable Project Brief - Proxy Mago
 
+> **Fluxo oficial de publicação:** este servidor `45.140.192.237` publica primeiro em `aryperdomo123456789-web/cdnvoods-assets/tree/backup`. Somente depois a branch `backup` promove o mesmo conteúdo para `aryperdomo123456789-web/cdnvoods-assets/tree/main`. Nunca publicar deste servidor diretamente para `main`.
+
+
 ## Mandatory Environment Rule
 
 This project is being developed **directly on the real production-like VPS**:

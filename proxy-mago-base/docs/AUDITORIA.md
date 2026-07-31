@@ -1,5 +1,8 @@
 # Auditoria técnica — proxy-mago-base (31/07/2026)
 
+> **Fluxo oficial de publicação:** este servidor `45.140.192.237` publica primeiro em `aryperdomo123456789-web/cdnvoods-assets/tree/backup`. Somente depois a branch `backup` promove o mesmo conteúdo para `aryperdomo123456789-web/cdnvoods-assets/tree/main`. Nunca publicar deste servidor diretamente para `main`.
+
+
 > **Atualização 31/07/2026 — Fase A implementada.** Ver §12 para o delta.
 > As seções 1–11 descrevem o estado **antes** da Fase A e são mantidas como
 > registro da auditoria.
