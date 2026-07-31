@@ -311,9 +311,15 @@ final class StreamProxy
      * @param array $ctx contexto de PlaylistRewriter::compile()
      * @return array{status:int,bytes:int}
      */
-    public static function streamTextual(array $origin, string $path, array $query, array $ctx, string $forcedType = ''): array
-    {
-        return self::pump($origin, $path, $query, '', $ctx, $forcedType, []);
+    public static function streamTextual(
+        array $origin,
+        string $path,
+        array $query,
+        array $ctx,
+        string $forcedType = '',
+        array $extraResponseHeaders = []
+    ): array {
+        return self::pump($origin, $path, $query, '', $ctx, $forcedType, $extraResponseHeaders);
     }
 
     private static function pump(
