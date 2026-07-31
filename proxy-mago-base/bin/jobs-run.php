@@ -130,6 +130,8 @@ if (!empty($opts['job'])) {
  */
 $deadline = time() + (int) ($opts['loop'] ?? 55);
 $exit = 0;
+// Manutenção é escrita e pertence ao runner, nunca ao polling read-only do painel.
+JobRunner::recoverStaleRunning();
 do {
     foreach (profile_jobs($profile) as $name) {
         try {

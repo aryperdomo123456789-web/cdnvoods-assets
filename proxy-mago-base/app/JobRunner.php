@@ -456,7 +456,9 @@ final class JobRunner
 
     public static function states(): array
     {
-        self::recoverStaleRunning();
+        // Leitura de painel precisa ser estritamente read-only. Antes ela
+        // chamava recoverStaleRunning(), um UPDATE que esperava o escritor
+        // SQLite por até busy_timeout (30s), mesmo quando não havia linha stale.
         $rows = Database::pdo()->query('SELECT * FROM job_state ORDER BY job_name ASC')->fetchAll();
         $byName = [];
         foreach ($rows as $r) { $byName[$r['job_name']] = $r; }
@@ -474,6 +476,16 @@ final class JobRunner
                 'running' => 0, 'running_since_epoch' => 0, 'circuit_open_until' => 0,
                 'circuit_reason' => '', 'skipped_runs' => 0, 'max_duration_ms' => 0,
             ];
+            // Exibe estado stale como recuperado sem transformar GET/polling em
+            // escrita. O próximo run() faz o UPSERT autoritativo normalmente.
+            if ((int) $row['running'] === 1
+                && (int) $row['running_since_epoch'] > 0
+                && (time() - (int) $row['running_since_epoch']) >= 600) {
+                $row['running'] = 0;
+                $row['running_since_epoch'] = 0;
+                $row['current_step'] = '';
+                $row['stale_recovered_view'] = true;
+            }
             $row['circuit_open'] = (int) $row['circuit_open_until'] > time();
             $row['late_seconds'] = (int) $row['next_run_epoch'] > 0
                 ? max(0, time() - (int) $row['next_run_epoch']) : 0;
