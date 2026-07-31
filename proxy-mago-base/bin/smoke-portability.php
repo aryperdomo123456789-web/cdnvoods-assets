@@ -31,10 +31,18 @@ $forbidden = [
 $offenders = [];
 foreach (glob($root . '/app/*.php') as $file) {
     $base = basename($file);
-    if ($base === 'Database.php') {
+    // Database.php e Sql.php SÃO o tradutor de dialeto: podem citar os dois.
+    if ($base === 'Database.php' || $base === 'Sql.php') {
         continue;
     }
-    $src = (string) file_get_contents($file);
+    // Comentário citando o problema não é o problema: só código conta.
+    $src = '';
+    foreach (token_get_all((string) file_get_contents($file)) as $token) {
+        if (is_array($token) && in_array($token[0], [T_COMMENT, T_DOC_COMMENT], true)) {
+            continue;
+        }
+        $src .= is_array($token) ? $token[1] : $token;
+    }
     foreach ($forbidden as $label => $re) {
         if (!preg_match($re, $src)) {
             continue;
