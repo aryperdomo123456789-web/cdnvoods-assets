@@ -9,6 +9,9 @@ set -uo pipefail
 
 HOST="${1:-}"; USER="${2:-}"; PASS="${3:-}"
 BASE="$(cd "$(dirname "$0")/.." && pwd)"
+. "$(cd "$(dirname "$0")" && pwd)/lib/smoke-serial.sh"
+smoke_resolve_php
+smoke_serialize
 PHP="$(command -v php || echo php)"
 ok=0; fail=0
 

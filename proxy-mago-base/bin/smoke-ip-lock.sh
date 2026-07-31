@@ -3,6 +3,9 @@
 # regra inválida e fail-open quando o usuário não tem trava.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+. "$(cd "$(dirname "$0")" && pwd)/lib/smoke-serial.sh"
+smoke_resolve_php
+smoke_serialize
 
 PHP_BIN="${PHP_BIN:-$(command -v php || true)}"
 if [ -z "$PHP_BIN" ] && command -v nix >/dev/null 2>&1; then

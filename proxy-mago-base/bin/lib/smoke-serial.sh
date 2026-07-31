@@ -24,6 +24,8 @@ smoke_resolve_php() {
 }
 
 smoke_serialize() {
+  # Rodando dentro de bin/smoke-all.sh: o runner ja detem o lock.
+  [ "${SMOKE_CHILD:-0}" = "1" ] && return 0
   [ "${SMOKE_NO_SERIAL:-0}" = "1" ] && { echo "  [warn] serializacao DESATIVADA (SMOKE_NO_SERIAL=1) — resultado nao vale como prova"; return 0; }
   local base lock wait
   base="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

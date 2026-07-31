@@ -4,6 +4,9 @@ set -uo pipefail
 
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$BASE"
+. "$(cd "$(dirname "$0")" && pwd)/lib/smoke-serial.sh"
+smoke_resolve_php
+smoke_serialize
 PHP="${PHP_BIN:-php}"
 fails=0
 
