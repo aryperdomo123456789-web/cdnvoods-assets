@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+remote_name="${1:-}"
+
+if [ "${ALLOW_PUSH_MAIN:-0}" = "1" ]; then
+  exit 0
+fi
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${remote_ref:-}" ] || continue
+  if [ "$remote_name" = "assets" ] && [ "$remote_ref" = "refs/heads/main" ]; then
+    cat >&2 <<'EOF'
+[push-bloqueado] Push direto para assets/main está proibido neste repositório.
+Fluxo oficial:
+  1. proxy-mago-base/bin/git-publish-backup.sh
+  2. proxy-mago-base/bin/git-promote-backup-to-main.sh
+
+Se você realmente precisa furar essa regra, use conscientemente:
+  ALLOW_PUSH_MAIN=1 git push assets ...
+EOF
+    exit 1
+  fi
+done
+
+exit 0
