@@ -1,0 +1,25 @@
+[Unit]
+Description=CDN Voods - musculo Go (LB)
+Documentation=file:///opt/proxy-mago/proxy-mago-base/docs/CONTRATO_LB_V1.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cdnvoods
+Group=cdnvoods
+EnvironmentFile=/etc/cdnvoods-lb.env
+ExecStartPre=/usr/local/bin/lb-go -check
+ExecStart=/usr/local/bin/lb-go
+Restart=always
+RestartSec=2
+# Stream de video abre muito socket: o default de 1024 estrangula o no.
+LimitNOFILE=200000
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/cdnvoods
+
+[Install]
+WantedBy=multi-user.target
