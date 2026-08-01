@@ -65,6 +65,7 @@ final class JobRunner
         'lb_rebalance',
     ];
 
+
     private const HEAVY_PROFILE = [
         'xui_sync_streams',
         'direct_enrich',
