@@ -43,6 +43,7 @@ unset($_SESSION['nginx_apply_result']);
         <a href="#aliases">Aliases</a>
         <a href="#tokens">Tokens</a>
         <a href="#health">Saúde</a>
+        <a href="#escala">Escala</a>
         <a href="/lb.php">LB</a>
         <a href="/export-config.php">Exportar Nginx</a>
         <a href="/logout.php">Sair</a>
@@ -78,6 +79,49 @@ unset($_SESSION['nginx_apply_result']);
             <input type="hidden" name="origin_host" value="<?php echo htmlspecialchars((string) ($settings['origin_host'] ?? '127.0.0.1')); ?>">
             <input type="hidden" name="origin_port" value="<?php echo htmlspecialchars((string) ($settings['origin_port'] ?? 80)); ?>">
             <button type="submit">Salvar</button>
+        </form>
+    </section>
+
+    <?php
+    $stateHealth = StateStore::health();
+    $lbTotals = LbRouter::totals();
+    ?>
+    <section class="card" id="escala">
+        <h2>Escala — estado vivo e cérebro puro</h2>
+        <p>
+            Estado vivo agora: <strong><?php echo htmlspecialchars($stateHealth['driver']); ?></strong>
+            (configurado: <?php echo htmlspecialchars($stateHealth['configured']); ?><?php
+                echo $stateHealth['degraded'] ? ' — degradado: ' . htmlspecialchars($stateHealth['reason']) : ''; ?>).
+            LBs instalados: <strong><?php echo (int) $lbTotals['installed']; ?></strong>,
+            saudáveis: <strong><?php echo (int) $lbTotals['healthy']; ?></strong>.
+        </p>
+        <form method="post" action="/save-scale.php">
+            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(csrf_token()); ?>">
+            <label>Driver do estado vivo (sessão, heartbeat, contador, trava de IP)</label>
+            <select name="state_driver">
+                <?php foreach (StateStore::DRIVERS as $d): ?>
+                <option value="<?php echo htmlspecialchars($d); ?>" <?php echo $stateHealth['configured'] === $d ? 'selected' : ''; ?>><?php echo htmlspecialchars($d); ?></option>
+                <?php endforeach; ?>
+            </select>
+            <small>Se o Redis não responder na hora de salvar, o painel volta sozinho para SQLite — nenhum player cai.</small>
+            <label>Redis host</label>
+            <input name="redis_host" value="<?php echo htmlspecialchars((string) SettingsRepository::get('redis_host', (string) Config::get('redis_host', '127.0.0.1'))); ?>">
+            <label>Redis porta</label>
+            <input name="redis_port" type="number" min="1" max="65535" value="<?php echo (int) SettingsRepository::get('redis_port', (string) Config::get('redis_port', 6379)); ?>">
+            <label>Redis DB</label>
+            <input name="redis_db" type="number" min="0" max="15" value="<?php echo (int) SettingsRepository::get('redis_db', (string) Config::get('redis_db', 0)); ?>">
+            <label>Redis senha</label>
+            <input name="redis_pass" type="password" placeholder="Deixe em branco para manter" autocomplete="off">
+            <label>Modo padrão de rota para usuário novo</label>
+            <select name="lb_default_mode">
+                <?php foreach (LbRouter::MODES as $m): ?>
+                <option value="<?php echo htmlspecialchars($m); ?>" <?php echo $lbTotals['default_mode'] === $m ? 'selected' : ''; ?>><?php echo htmlspecialchars($m); ?></option>
+                <?php endforeach; ?>
+            </select>
+            <small>Com <code>auto</code>, todo usuário do XUI passa a sair pelo melhor músculo — o job <code>lb_autoroute</code> materializa as rotas.</small>
+            <label><input type="checkbox" name="lb_require_delivery" value="1" <?php echo $lbTotals['require_delivery'] ? 'checked' : ''; ?>> Entrega obrigatória pelo LB (cérebro puro)</label>
+            <small>Com isso ligado, o main NÃO entrega stream: usuário sem músculo apto recebe 503. Só é aceito quando existe LB instalado e saudável.</small>
+            <button type="submit">Salvar escala</button>
         </form>
     </section>
 
