@@ -7,6 +7,9 @@ date_default_timezone_set('America/Sao_Paulo');
 require_once dirname(__DIR__) . '/app/Config.php';
 require_once dirname(__DIR__) . '/app/Sql.php';
 require_once dirname(__DIR__) . '/app/Cache.php';
+// Estado vivo compartilhado + contrato do LB (Fase 2 / contrato v1).
+require_once dirname(__DIR__) . '/app/RedisClient.php';
+require_once dirname(__DIR__) . '/app/StateStore.php';
 require_once dirname(__DIR__) . '/app/Freshness.php';
 require_once dirname(__DIR__) . '/app/Database.php';
 require_once dirname(__DIR__) . '/app/SettingsRepository.php';
