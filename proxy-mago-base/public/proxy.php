@@ -158,6 +158,28 @@ if ((string) Config::get('role', 'main') !== 'lb'
     ];
 }
 
+// ---------------------------------------------------------------------------
+// CÉREBRO PURO (lb_require_delivery=1)
+//
+// Com a flag ligada, o main é REGISTRO + CONTROLE: quem entrega byte é músculo.
+// Se o usuário não tem LB apto, é melhor recusar este request do que deixar o
+// cérebro virar servidor de stream e derrubar o painel inteiro junto.
+// ---------------------------------------------------------------------------
+if ((string) Config::get('role', 'main') !== 'lb'
+    && (string) ($lbDecision['target'] ?? 'main') !== 'lb'
+    && LbRouter::requireDelivery()) {
+    CdnSession::reject($SESSION_KEY, 'lb_required_no_muscle');
+    Audit::log(
+        'lb_required_no_muscle',
+        sprintf('request_id=%s user=%s host=%s reason=%s',
+            $REQ->requestId, $REQ->username, $host, (string) ($lbDecision['reason'] ?? '')),
+        $clientIp,
+        $userAgent
+    );
+    proxy_fail(503, $host, $path, 'lb_required_no_muscle');
+    return;
+}
+
 // Enforcement de limite (só age em modo "block", após a tolerância de reconexão).
 if ($REQ->username !== '' && Divergence::shouldBlock($REQ->username, CdnSession::kindOf($REQ))) {
     CdnSession::reject($SESSION_KEY, 'above_limit_blocked');

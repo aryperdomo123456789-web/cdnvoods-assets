@@ -126,6 +126,10 @@ final class LbContract
             'session_ttl_live' => $int('cdn_session_ttl_live', 120),
             'session_ttl_vod' => $int('cdn_session_ttl_vod', 1800),
             'log_requests' => $bool('log_requests', true),
+            // Cérebro puro: o músculo sabe que ele é o ÚNICO caminho de entrega
+            // e não deve mandar o player de volta para o main.
+            'lb_require_delivery' => LbRouter::requireDelivery(),
+            'lb_default_mode' => LbRouter::defaultMode(),
         ];
     }
 

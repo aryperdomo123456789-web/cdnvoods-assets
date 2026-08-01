@@ -84,6 +84,8 @@ function job_callable(string $name): callable
             return fn (array &$s) => LbTelemetry::probeAll($s);
         case 'lb_rebalance':
             return fn (array &$s) => LbRouter::rebalance($s);
+        case 'lb_autoroute':
+            return fn (array &$s) => LbRouter::autoroute($s);
         case 'lb_cleanup':
             return fn (array &$s) => LbTelemetry::cleanup($s);
     }

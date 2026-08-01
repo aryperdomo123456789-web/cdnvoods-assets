@@ -12,6 +12,31 @@ final class LbRouter
 {
     public const MODES = ['main_only', 'forced', 'auto', 'disabled'];
 
+    /** Chave do melhor músculo já mastigado pelo job (lida no caminho quente). */
+    private const BEST_KEY = 'lb:best';
+
+    /**
+     * Cérebro puro: com 1, o main não entrega conteúdo do XUI. Se o usuário não
+     * tem músculo apto, o request é recusado em vez de afundar o cérebro.
+     */
+    public static function requireDelivery(): bool
+    {
+        return (int) SettingsRepository::get(
+            'lb_require_delivery',
+            (string) (int) Config::get('lb_require_delivery', 0)
+        ) === 1;
+    }
+
+    /** Modo aplicado a usuário que ainda não tem linha em lb_user_routes. */
+    public static function defaultMode(): string
+    {
+        $mode = (string) SettingsRepository::get(
+            'lb_default_mode',
+            (string) Config::get('lb_default_mode', 'main_only')
+        );
+        return in_array($mode, self::MODES, true) ? $mode : 'main_only';
+    }
+
     /**
      * Decisão do caminho QUENTE (chamada pelo proxy).
      *
@@ -36,7 +61,7 @@ final class LbRouter
         $st->execute([':u' => $username]);
         $row = $st->fetch();
         if (!$row) {
-            return $main;
+            return self::defaultDecision();
         }
         $mode = (string) $row['mode'];
         $lbId = (int) $row['lb_id'];
@@ -57,6 +82,55 @@ final class LbRouter
         }
         return ['target' => 'lb', 'lb_id' => $lbId, 'host' => (string) $row['public_ip'],
                 'reason' => $mode === 'forced' ? 'forced' : 'auto_pinned', 'mode' => $mode];
+    }
+
+    /**
+     * Usuário sem rota gravada. Em `auto` por padrão, o caminho quente NÃO
+     * pontua nada: usa o melhor músculo já publicado pelo job `lb_rebalance`
+     * no estado vivo (Redis/SQLite), que é uma leitura só por request textual.
+     *
+     * @return array{target:string,lb_id:int,host:string,reason:string,mode:string}
+     */
+    public static function defaultDecision(): array
+    {
+        $mode = self::defaultMode();
+        $main = ['target' => 'main', 'lb_id' => 0, 'host' => '', 'reason' => 'sem_rota_' . $mode, 'mode' => $mode];
+        if ($mode !== 'auto') {
+            return $main;
+        }
+
+        $best = self::bestPinned();
+        if ($best === null) {
+            $main['reason'] = 'sem_lb_apto_cerebro';
+            return $main;
+        }
+        return ['target' => 'lb', 'lb_id' => (int) $best['id'], 'host' => (string) $best['host'],
+                'reason' => 'auto_default', 'mode' => 'auto'];
+    }
+
+    /** Melhor músculo publicado pelo job. @return array{id:int,host:string}|null */
+    public static function bestPinned(): ?array
+    {
+        $best = StateStore::kvGet(self::BEST_KEY);
+        if (!is_array($best) || (int) ($best['id'] ?? 0) <= 0 || (string) ($best['host'] ?? '') === '') {
+            return null;
+        }
+        return ['id' => (int) $best['id'], 'host' => (string) $best['host']];
+    }
+
+    /** Publica (ou apaga) o melhor músculo para o caminho quente. */
+    public static function publishBest(?array $node, float $score = 0.0): void
+    {
+        if ($node === null || (string) ($node['public_ip'] ?? '') === '') {
+            StateStore::kvDel(self::BEST_KEY);
+            return;
+        }
+        StateStore::kvSet(self::BEST_KEY, [
+            'id' => (int) $node['id'],
+            'host' => (string) $node['public_ip'],
+            'score' => round($score, 1),
+            'ts' => time(),
+        ], 180);
     }
 
     /** Registra que a rota do usuário caiu no cérebro (1 UPDATE, com retry). */
@@ -275,6 +349,8 @@ final class LbRouter
         $best = self::bestNode();
         $bestId = $best ? (int) $best['id'] : 0;
         $bestScore = $best ? self::score($best) : 0.0;
+        // Caminho quente lê daqui (1 leitura de estado vivo), nunca pontua.
+        self::publishBest($best, $bestScore);
 
         JobRunner::step('aplicar_decisoes');
         $moved = 0;
@@ -301,6 +377,52 @@ final class LbRouter
         $stats['details'] = ['best_lb_id' => $bestId, 'best_score' => round($bestScore, 1), 'moved' => $moved];
     }
 
+    /**
+     * Job `lb_autoroute`: materializa rota para todo usuário do XUI que ainda
+     * não tem linha em lb_user_routes, usando o modo padrão configurado.
+     *
+     * Sem isso, "todo mundo no LB" dependeria de o operador cadastrar usuário
+     * por usuário no painel — inviável com milhares de linhas.
+     */
+    public static function autoroute(array &$stats): void
+    {
+        $mode = self::defaultMode();
+        if ($mode === 'main_only' || $mode === 'disabled') {
+            $stats['details'] = ['skipped' => 'lb_default_mode=' . $mode];
+            return;
+        }
+
+        JobRunner::step('buscar_usuarios_sem_rota');
+        $rows = Database::pdo()->query(
+            'SELECT u.username FROM xui_users_cache u
+               LEFT JOIN lb_user_routes r ON r.username = u.username
+              WHERE u.enabled = 1 AND r.username IS NULL
+              ORDER BY u.username ASC LIMIT 5000'
+        )->fetchAll() ?: [];
+
+        JobRunner::step('gravar_rotas', count($rows) . ' novo(s)');
+        $now = date('c');
+        $sql = Sql::insertIgnore(
+            'lb_user_routes',
+            ['username', 'lb_id', 'mode', 'reason', 'created_at', 'updated_at', 'changed_epoch', 'changes'],
+            ['username']
+        );
+        foreach ($rows as $row) {
+            Database::run($sql, [
+                ':username' => (string) $row['username'],
+                ':lb_id' => 0,
+                ':mode' => $mode,
+                ':reason' => 'autoroute_default',
+                ':created_at' => $now,
+                ':updated_at' => $now,
+                ':changed_epoch' => time(),
+                ':changes' => 0,
+            ], 'lb_route.autoroute');
+            $stats['processed']++;
+        }
+        $stats['details'] = ['mode' => $mode, 'criadas' => count($rows)];
+    }
+
     /** KPIs do bloco de balanceamento no painel. */
     public static function totals(): array
     {
@@ -322,6 +444,8 @@ final class LbRouter
             'tx_mbps' => round($tx, 1),
             'routes_forced' => (int) $pdo->query('SELECT COUNT(*) FROM lb_user_routes WHERE mode = "forced"')->fetchColumn(),
             'routes_auto' => (int) $pdo->query('SELECT COUNT(*) FROM lb_user_routes WHERE mode = "auto"')->fetchColumn(),
+            'require_delivery' => self::requireDelivery(),
+            'default_mode' => self::defaultMode(),
         ];
     }
 }

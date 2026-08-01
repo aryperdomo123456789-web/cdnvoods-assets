@@ -26,7 +26,7 @@ final class Freshness
         'summary'  => ['consolidate_runtime', 'metrics_rollup_light'],
         'lb'       => ['lb_probe'],
         'nodes'    => ['lb_probe'],
-        'routes'   => ['lb_rebalance'],
+        'routes'   => ['lb_rebalance', 'lb_autoroute'],
         'default'  => ['consolidate_runtime'],
     ];
 
