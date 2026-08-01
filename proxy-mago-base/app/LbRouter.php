@@ -12,6 +12,31 @@ final class LbRouter
 {
     public const MODES = ['main_only', 'forced', 'auto', 'disabled'];
 
+    /** Chave do melhor músculo já mastigado pelo job (lida no caminho quente). */
+    private const BEST_KEY = 'lb:best';
+
+    /**
+     * Cérebro puro: com 1, o main não entrega conteúdo do XUI. Se o usuário não
+     * tem músculo apto, o request é recusado em vez de afundar o cérebro.
+     */
+    public static function requireDelivery(): bool
+    {
+        return (int) SettingsRepository::get(
+            'lb_require_delivery',
+            (string) (int) Config::get('lb_require_delivery', 0)
+        ) === 1;
+    }
+
+    /** Modo aplicado a usuário que ainda não tem linha em lb_user_routes. */
+    public static function defaultMode(): string
+    {
+        $mode = (string) SettingsRepository::get(
+            'lb_default_mode',
+            (string) Config::get('lb_default_mode', 'main_only')
+        );
+        return in_array($mode, self::MODES, true) ? $mode : 'main_only';
+    }
+
     /**
      * Decisão do caminho QUENTE (chamada pelo proxy).
      *
@@ -36,7 +61,7 @@ final class LbRouter
         $st->execute([':u' => $username]);
         $row = $st->fetch();
         if (!$row) {
-            return $main;
+            return self::defaultDecision();
         }
         $mode = (string) $row['mode'];
         $lbId = (int) $row['lb_id'];
@@ -57,6 +82,55 @@ final class LbRouter
         }
         return ['target' => 'lb', 'lb_id' => $lbId, 'host' => (string) $row['public_ip'],
                 'reason' => $mode === 'forced' ? 'forced' : 'auto_pinned', 'mode' => $mode];
+    }
+
+    /**
+     * Usuário sem rota gravada. Em `auto` por padrão, o caminho quente NÃO
+     * pontua nada: usa o melhor músculo já publicado pelo job `lb_rebalance`
+     * no estado vivo (Redis/SQLite), que é uma leitura só por request textual.
+     *
+     * @return array{target:string,lb_id:int,host:string,reason:string,mode:string}
+     */
+    public static function defaultDecision(): array
+    {
+        $mode = self::defaultMode();
+        $main = ['target' => 'main', 'lb_id' => 0, 'host' => '', 'reason' => 'sem_rota_' . $mode, 'mode' => $mode];
+        if ($mode !== 'auto') {
+            return $main;
+        }
+
+        $best = self::bestPinned();
+        if ($best === null) {
+            $main['reason'] = 'sem_lb_apto_cerebro';
+            return $main;
+        }
+        return ['target' => 'lb', 'lb_id' => (int) $best['id'], 'host' => (string) $best['host'],
+                'reason' => 'auto_default', 'mode' => 'auto'];
+    }
+
+    /** Melhor músculo publicado pelo job. @return array{id:int,host:string}|null */
+    public static function bestPinned(): ?array
+    {
+        $best = StateStore::kvGet(self::BEST_KEY);
+        if (!is_array($best) || (int) ($best['id'] ?? 0) <= 0 || (string) ($best['host'] ?? '') === '') {
+            return null;
+        }
+        return ['id' => (int) $best['id'], 'host' => (string) $best['host']];
+    }
+
+    /** Publica (ou apaga) o melhor músculo para o caminho quente. */
+    public static function publishBest(?array $node, float $score = 0.0): void
+    {
+        if ($node === null || (string) ($node['public_ip'] ?? '') === '') {
+            StateStore::kvDel(self::BEST_KEY);
+            return;
+        }
+        StateStore::kvSet(self::BEST_KEY, [
+            'id' => (int) $node['id'],
+            'host' => (string) $node['public_ip'],
+            'score' => round($score, 1),
+            'ts' => time(),
+        ], 180);
     }
 
     /** Registra que a rota do usuário caiu no cérebro (1 UPDATE, com retry). */
