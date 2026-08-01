@@ -245,6 +245,32 @@ func (s *Store) SessionClose(sessionKey, identity string) error {
 	return err
 }
 
+// SessionExists diz se a chave de sessão está viva. O segundo retorno indica
+// se a resposta é confiável (false = estado vivo degradado).
+func (s *Store) SessionExists(sessionKey string) (bool, bool) {
+	if sessionKey == "" {
+		return false, false
+	}
+	res, err := s.do([]string{"EXISTS", NS + "sess:" + sessionKey})
+	if err != nil {
+		return false, false
+	}
+	n, _ := res[0].(int64)
+	return n == 1, true
+}
+
+func (s *Store) sessionCloseLegacy(sessionKey, identity string) error {
+	if sessionKey == "" {
+		return nil
+	}
+	cmds := [][]string{{"DEL", NS + "sess:" + sessionKey}}
+	if identity != "" {
+		cmds = append(cmds, []string{"SREM", NS + "user:" + identity, sessionKey})
+	}
+	_, err := s.do(cmds...)
+	return err
+}
+
 // UserCount conta sessões vivas do usuário e PODA o índice na leitura — é o que
 // permite o limite de conexão sem varredura, igual StateStore::userSessions().
 func (s *Store) UserCount(identity string) (int, error) {
