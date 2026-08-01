@@ -349,6 +349,8 @@ final class LbRouter
         $best = self::bestNode();
         $bestId = $best ? (int) $best['id'] : 0;
         $bestScore = $best ? self::score($best) : 0.0;
+        // Caminho quente lê daqui (1 leitura de estado vivo), nunca pontua.
+        self::publishBest($best, $bestScore);
 
         JobRunner::step('aplicar_decisoes');
         $moved = 0;
@@ -375,6 +377,52 @@ final class LbRouter
         $stats['details'] = ['best_lb_id' => $bestId, 'best_score' => round($bestScore, 1), 'moved' => $moved];
     }
 
+    /**
+     * Job `lb_autoroute`: materializa rota para todo usuário do XUI que ainda
+     * não tem linha em lb_user_routes, usando o modo padrão configurado.
+     *
+     * Sem isso, "todo mundo no LB" dependeria de o operador cadastrar usuário
+     * por usuário no painel — inviável com milhares de linhas.
+     */
+    public static function autoroute(array &$stats): void
+    {
+        $mode = self::defaultMode();
+        if ($mode === 'main_only' || $mode === 'disabled') {
+            $stats['details'] = ['skipped' => 'lb_default_mode=' . $mode];
+            return;
+        }
+
+        JobRunner::step('buscar_usuarios_sem_rota');
+        $rows = Database::pdo()->query(
+            'SELECT u.username FROM xui_users_cache u
+               LEFT JOIN lb_user_routes r ON r.username = u.username
+              WHERE u.enabled = 1 AND r.username IS NULL
+              ORDER BY u.username ASC LIMIT 5000'
+        )->fetchAll() ?: [];
+
+        JobRunner::step('gravar_rotas', count($rows) . ' novo(s)');
+        $now = date('c');
+        $sql = Sql::insertIgnore(
+            'lb_user_routes',
+            ['username', 'lb_id', 'mode', 'reason', 'created_at', 'updated_at', 'changed_epoch', 'changes'],
+            ['username']
+        );
+        foreach ($rows as $row) {
+            Database::run($sql, [
+                ':username' => (string) $row['username'],
+                ':lb_id' => 0,
+                ':mode' => $mode,
+                ':reason' => 'autoroute_default',
+                ':created_at' => $now,
+                ':updated_at' => $now,
+                ':changed_epoch' => time(),
+                ':changes' => 0,
+            ], 'lb_route.autoroute');
+            $stats['processed']++;
+        }
+        $stats['details'] = ['mode' => $mode, 'criadas' => count($rows)];
+    }
+
     /** KPIs do bloco de balanceamento no painel. */
     public static function totals(): array
     {
@@ -396,6 +444,8 @@ final class LbRouter
             'tx_mbps' => round($tx, 1),
             'routes_forced' => (int) $pdo->query('SELECT COUNT(*) FROM lb_user_routes WHERE mode = "forced"')->fetchColumn(),
             'routes_auto' => (int) $pdo->query('SELECT COUNT(*) FROM lb_user_routes WHERE mode = "auto"')->fetchColumn(),
+            'require_delivery' => self::requireDelivery(),
+            'default_mode' => self::defaultMode(),
         ];
     }
 }
