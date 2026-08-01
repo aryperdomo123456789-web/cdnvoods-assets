@@ -145,6 +145,13 @@ final class LbContract
                 'host' => (string) ($o['host'] ?? ''),
                 'port' => (int) ($o['port'] ?? 80),
                 'host_header' => (string) ($o['host_header'] ?? ''),
+                // O músculo precisa disso para MASCARAR o corpo (extra_hosts) e
+                // para falar com origem de conta única (auth_*). O snapshot só
+                // sai com X-LB-Token válido — ver docs/CONTRATO_LB_V1.md.
+                'extra_hosts' => (string) ($o['extra_hosts'] ?? ''),
+                'base_path' => (string) ($o['base_path'] ?? ''),
+                'auth_user' => (string) ($o['auth_user'] ?? ''),
+                'auth_pass' => (string) ($o['auth_pass'] ?? ''),
                 'active' => (int) ($o['active'] ?? 1) === 1,
             ];
         }
