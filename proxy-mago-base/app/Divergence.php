@@ -73,17 +73,17 @@ final class Divergence
         ];
 
         $check = $pdo->prepare(
-            'SELECT id, opened_at, opened_epoch, occurrences FROM cdn_divergences
-              WHERE username = :u AND kind = :k AND scope = :sc AND status = "open"
-              ORDER BY id ASC LIMIT 1'
+            "SELECT id, opened_at, opened_epoch, occurrences FROM cdn_divergences
+              WHERE username = :u AND kind = :k AND scope = :sc AND status = 'open'
+              ORDER BY id ASC LIMIT 1"
         );
         $check->execute([':u' => $username, ':k' => $kind, ':sc' => $scope]);
         $existing = $check->fetch();
 
         if ($existing) {
             $pdo->prepare(
-                'DELETE FROM cdn_divergences
-                  WHERE username = :u AND kind = :k AND scope = :sc AND status = "open"'
+                "DELETE FROM cdn_divergences
+                  WHERE username = :u AND kind = :k AND scope = :sc AND status = 'open'"
             )->execute([':u' => $username, ':k' => $kind, ':sc' => $scope]);
 
             $params[':oa'] = (string) $existing['opened_at'];
@@ -94,10 +94,10 @@ final class Divergence
         }
 
         $pdo->prepare(
-            'INSERT INTO cdn_divergences
+            "INSERT INTO cdn_divergences
                (username, kind, severity, cdn_count, xui_count, max_connections, probable_cause,
                 detail, status, scope, stream_id, opened_at, opened_epoch, last_seen_epoch, occurrences)
-             VALUES (:u,:k,:s,:cc,:xc,:mc,:pc,:d,"open",:sc,:sid,:oa,:oe,:le,:occ)'
+             VALUES (:u,:k,:s,:cc,:xc,:mc,:pc,:d,'open',:sc,:sid,:oa,:oe,:le,:occ)"
         )->execute($params);
     }
 
@@ -105,8 +105,8 @@ final class Divergence
     public static function closeStale(int $seconds = 300): int
     {
         $stmt = Database::pdo()->prepare(
-            'UPDATE cdn_divergences SET status = "closed", closed_epoch = :now
-              WHERE status = "open" AND last_seen_epoch < :cut'
+            "UPDATE cdn_divergences SET status = 'closed', closed_epoch = :now
+              WHERE status = 'open' AND last_seen_epoch < :cut"
         );
         $stmt->execute([':now' => time(), ':cut' => time() - $seconds]);
         return $stmt->rowCount();
@@ -115,13 +115,13 @@ final class Divergence
     /** @return array<int,array<string,mixed>> */
     public static function open(array $filters = [], int $limit = 200): array
     {
-        $sql = 'SELECT * FROM cdn_divergences WHERE status = "open"';
+        $sql = "SELECT * FROM cdn_divergences WHERE status = 'open'";
         $params = [];
         if (!empty($filters['severity'])) { $sql .= ' AND severity = :s'; $params[':s'] = $filters['severity']; }
         if (!empty($filters['kind'])) { $sql .= ' AND kind = :k'; $params[':k'] = $filters['kind']; }
-        if (!empty($filters['direct'])) { $sql .= ' AND kind LIKE "direct_%"'; }
+        if (!empty($filters['direct'])) { $sql .= " AND kind LIKE 'direct_%'"; }
         if (!empty($filters['username'])) { $sql .= ' AND username LIKE :u'; $params[':u'] = '%' . $filters['username'] . '%'; }
-        $sql .= ' ORDER BY CASE severity WHEN "critical" THEN 0 WHEN "warn" THEN 1 ELSE 2 END,'
+        $sql .= " ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END,"
               . ' last_seen_epoch DESC LIMIT ' . max(1, min(500, $limit));
         $stmt = Database::pdo()->prepare($sql);
         $stmt->execute($params);
@@ -132,7 +132,7 @@ final class Divergence
     public static function counters(): array
     {
         $rows = Database::pdo()->query(
-            'SELECT severity, COUNT(*) AS c FROM cdn_divergences WHERE status = "open" GROUP BY severity'
+            "SELECT severity, COUNT(*) AS c FROM cdn_divergences WHERE status = 'open' GROUP BY severity"
         )->fetchAll();
         $out = ['critical' => 0, 'warn' => 0, 'info' => 0];
         foreach ($rows as $r) { $out[(string) $r['severity']] = (int) $r['c']; }
@@ -143,11 +143,11 @@ final class Divergence
     public static function countersRecent(int $seconds = 300): array
     {
         $st = Database::pdo()->prepare(
-            'SELECT severity, COUNT(*) AS c
+            "SELECT severity, COUNT(*) AS c
                FROM cdn_divergences
-              WHERE status = "open" AND last_seen_epoch >= :cut
-                AND kind NOT IN ("direct_db_flag_without_runtime", "direct_orphan_session")
-              GROUP BY severity'
+              WHERE status = 'open' AND last_seen_epoch >= :cut
+                AND kind NOT IN ('direct_db_flag_without_runtime', 'direct_orphan_session')
+              GROUP BY severity"
         );
         $st->execute([':cut' => time() - max(30, $seconds)]);
         $rows = $st->fetchAll();
@@ -160,16 +160,16 @@ final class Divergence
     public static function countersOperational(int $seconds = 300): array
     {
         $st = Database::pdo()->prepare(
-            'SELECT severity, COUNT(*) AS c
+            "SELECT severity, COUNT(*) AS c
                FROM cdn_divergences
-              WHERE status = "open"
+              WHERE status = 'open'
                 AND last_seen_epoch >= :cut
                 AND kind NOT IN (
-                    "direct_db_flag_without_runtime",
-                    "direct_orphan_session",
-                    "direct_runtime_without_db"
+                    'direct_db_flag_without_runtime',
+                    'direct_orphan_session',
+                    'direct_runtime_without_db'
                 )
-              GROUP BY severity'
+              GROUP BY severity"
         );
         $st->execute([':cut' => time() - max(30, $seconds)]);
         $rows = $st->fetchAll();

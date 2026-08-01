@@ -155,10 +155,10 @@ final class JobRunner
             'job_runs.open'
         );
         Database::run(
-            'INSERT INTO job_state (job_name, purpose, interval_seconds, running, running_since_epoch, last_run_id, updated_at)
+            "INSERT INTO job_state (job_name, purpose, interval_seconds, running, running_since_epoch, last_run_id, updated_at)
              VALUES (:n,:p,:i,1,:se,:r,:up)
              ON CONFLICT(job_name) DO UPDATE SET running=1, running_since_epoch=excluded.running_since_epoch,
-               last_run_id=excluded.last_run_id, current_step=\'\', updated_at=excluded.updated_at',
+               last_run_id=excluded.last_run_id, current_step='', updated_at=excluded.updated_at",
             [':n' => $jobName, ':p' => $purpose, ':i' => $interval, ':se' => time(), ':r' => $runId, ':up' => date('c')],
             'job_state.running'
         );
@@ -211,11 +211,11 @@ final class JobRunner
         }
 
         Database::run(
-            'INSERT INTO job_state (job_name, purpose, interval_seconds, last_run_at, last_run_epoch,
+            "INSERT INTO job_state (job_name, purpose, interval_seconds, last_run_at, last_run_epoch,
                 last_status, last_duration_ms, last_processed, last_failed, last_error, next_run_epoch,
                 total_runs, total_failures, updated_at, running, running_since_epoch, last_run_id,
                 current_step, consecutive_failures, circuit_open_until, circuit_reason, max_duration_ms)
-             VALUES (:n,:p,:i,:la,:le,:st,:d,:pr,:fa,:er,:nr,1,:tf,:up,0,0,:rid,\'\',:cf,:cu,:cr,:d2)
+             VALUES (:n,:p,:i,:la,:le,:st,:d,:pr,:fa,:er,:nr,1,:tf,:up,0,0,:rid,'',:cf,:cu,:cr,:d2)
              ON CONFLICT(job_name) DO UPDATE SET
                 purpose=excluded.purpose,
                 interval_seconds=excluded.interval_seconds,
@@ -233,11 +233,11 @@ final class JobRunner
                 running=0,
                 running_since_epoch=0,
                 last_run_id=excluded.last_run_id,
-                current_step=\'\',
+                current_step='',
                 consecutive_failures=excluded.consecutive_failures,
                 circuit_open_until=excluded.circuit_open_until,
                 circuit_reason=excluded.circuit_reason,
-                max_duration_ms=MAX(job_state.max_duration_ms, excluded.max_duration_ms)',
+                max_duration_ms=GREATEST(job_state.max_duration_ms, excluded.max_duration_ms)",
             [
                 ':n' => $jobName, ':p' => $purpose, ':i' => $interval,
                 ':la' => date('c'), ':le' => time(), ':st' => $status, ':d' => $duration,
@@ -419,8 +419,8 @@ final class JobRunner
     public static function resetCircuit(string $jobName): void
     {
         Database::run(
-            'UPDATE job_state SET circuit_open_until = 0, circuit_reason = "", consecutive_failures = 0, updated_at = :u
-              WHERE job_name = :n',
+            "UPDATE job_state SET circuit_open_until = 0, circuit_reason = '', consecutive_failures = 0, updated_at = :u
+              WHERE job_name = :n",
             [':u' => date('c'), ':n' => $jobName],
             'job_state.circuit_reset'
         );
@@ -436,14 +436,14 @@ final class JobRunner
         $affected = 0;
         Database::write(static function (PDO $pdo) use ($staleSince, $now, &$affected): void {
             $st = $pdo->prepare(
-                'UPDATE job_state
+                "UPDATE job_state
                     SET running = 0,
                         running_since_epoch = 0,
-                        current_step = "",
+                        current_step = '',
                         updated_at = :updated
                   WHERE running = 1
                     AND running_since_epoch > 0
-                    AND running_since_epoch < :cut'
+                    AND running_since_epoch < :cut"
             );
             $st->execute([
                 ':updated' => date('c', $now),

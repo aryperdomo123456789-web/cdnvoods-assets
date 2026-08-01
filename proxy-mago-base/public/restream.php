@@ -147,7 +147,13 @@ const failRow = (id, cols, msg) => {
   if (el) el.innerHTML = `<tr><td colspan="${cols}" class="muted">${esc(msg)}</td></tr>`;
 };
 const statusTag = (s) => {
-  const cls = s === 'streaming' ? 'ok' : (s === 'over_limit' ? 'bad' : (s === 'full' ? 'warn' : 'info'));
+  const cls = s === 'streaming'
+    ? 'ok'
+    : (s === 'over_limit'
+      ? 'bad'
+      : (s === 'full' || s === 'fetching' || s === 'recent_fetch'
+        ? 'warn'
+        : 'info'));
   return `<span class="tag ${cls}">${esc(s)}</span>`;
 };
 const shortPlayer = (s) => esc((s || '').slice(0, 28) || '-');
@@ -286,7 +292,11 @@ function renderUsers() {
       status: used > 0 ? 'streaming' : u.status,
     };
   });
-  if (mode === 'active') rows = rows.filter(r => Number(r.connections_used || 0) > 0 || r._sticky);
+  if (mode === 'active') rows = rows.filter(r =>
+    Number(r.connections_used || 0) > 0
+    || Number(r.recent_activity || 0) > 0
+    || r._sticky
+  );
   if (mode === 'direct') rows = rows.filter(r => Number(r.direct_sessions_now || 0) > 0 || r._sticky);
   rows.sort((a, b) =>
     Number(b.connections_used || 0) - Number(a.connections_used || 0)
@@ -300,7 +310,11 @@ function renderUsers() {
     rows.reduce((sum, row) => sum + Number(row.connections_used || 0), 0)
   );
   const kpiDirect = rows.reduce((n, r) => n + Number(r.direct_sessions_now || 0), 0);
-  const kpiUsersActive = rows.filter(r => Number(r.connections_used || 0) > 0 || Number(r.direct_sessions_now || 0) > 0).length;
+  const kpiUsersActive = rows.filter(r =>
+    Number(r.connections_used || 0) > 0
+    || Number(r.direct_sessions_now || 0) > 0
+    || Number(r.recent_activity || 0) > 0
+  ).length;
 
   $('kpis').innerHTML = [
     ['Usuários XUI', totals.users_total || rows.length || 0],
@@ -323,7 +337,7 @@ function renderUsers() {
     <td>${u.uptime_start_epoch_live ? esc(uptime(u.uptime_start_epoch_live)) : '-'}</td>
     <td>${esc(displayCurrentExit(u))}</td>
     <td>${esc(u.route_lb_label || 'main')}</td>
-    <td>${statusTag(u._sticky ? 'streaming' : u.status)}${u._sticky ? ' <span class="muted">uptime mantido</span>' : ''}</td>
+    <td>${statusTag(u._sticky ? 'streaming' : u.status)}${Number(u.recent_activity || 0) > 0 && Number(u.connections_used || 0) === 0 && !u._sticky ? ' <span class="muted">atividade quente</span>' : ''}${u._sticky ? ' <span class="muted">uptime mantido</span>' : ''}</td>
   </tr>`).join('') : '<tr><td colspan="12" class="muted">nenhum usuário no filtro atual</td></tr>';
 
   $('stamp').textContent = 'última atualização: ' + new Date().toLocaleTimeString('pt-BR');

@@ -47,7 +47,7 @@ final class AuditTimeline
         $now = time();
         $directHost = (string) ($extra['direct_host'] ?? '');
         Database::run(
-            'INSERT INTO cdn_audit_timeline
+            "INSERT INTO cdn_audit_timeline
                (session_key, username, credential_fingerprint, client_ip, user_agent, public_host,
                 session_kind, stream_id, origin_id, lb_id, lb_target, lb_reason,
                 direct_source, direct_host, first_request_id, last_request_id, last_path,
@@ -56,7 +56,7 @@ final class AuditTimeline
              VALUES (:k,:u,:fp,:ip,:ua,:host,:kind,:sid,:oid,:lb,:lbt,:lbr,:ds,:dh,:rid,:rid2,:path,
                      :st,:reason,:inc,1,:err,:by,:hops,:now,:now2)
              ON CONFLICT(session_key) DO UPDATE SET
-               username=CASE WHEN excluded.username <> "" THEN excluded.username ELSE cdn_audit_timeline.username END,
+               username=CASE WHEN excluded.username <> '' THEN excluded.username ELSE cdn_audit_timeline.username END,
                public_host=excluded.public_host,
                stream_id=CASE WHEN excluded.stream_id > 0 THEN excluded.stream_id ELSE cdn_audit_timeline.stream_id END,
                origin_id=CASE WHEN excluded.origin_id > 0 THEN excluded.origin_id ELSE cdn_audit_timeline.origin_id END,
@@ -64,17 +64,17 @@ final class AuditTimeline
                lb_target=excluded.lb_target,
                lb_reason=excluded.lb_reason,
                direct_source=CASE WHEN excluded.direct_source = 1 THEN 1 ELSE cdn_audit_timeline.direct_source END,
-               direct_host=CASE WHEN excluded.direct_host <> "" THEN excluded.direct_host ELSE cdn_audit_timeline.direct_host END,
+               direct_host=CASE WHEN excluded.direct_host <> '' THEN excluded.direct_host ELSE cdn_audit_timeline.direct_host END,
                last_request_id=excluded.last_request_id,
                last_path=excluded.last_path,
                last_status=excluded.last_status,
                last_reason=excluded.last_reason,
-               inconsistency=CASE WHEN excluded.inconsistency <> "" THEN excluded.inconsistency ELSE cdn_audit_timeline.inconsistency END,
+               inconsistency=CASE WHEN excluded.inconsistency <> '' THEN excluded.inconsistency ELSE cdn_audit_timeline.inconsistency END,
                requests=cdn_audit_timeline.requests + 1,
                errors=cdn_audit_timeline.errors + excluded.errors,
                bytes=cdn_audit_timeline.bytes + excluded.bytes,
-               hops=MAX(cdn_audit_timeline.hops, excluded.hops),
-               last_epoch=excluded.last_epoch',
+               hops=GREATEST(cdn_audit_timeline.hops, excluded.hops),
+               last_epoch=excluded.last_epoch",
             [
                 ':k' => $sessionKey,
                 ':u' => $ctx->username,
@@ -131,7 +131,7 @@ final class AuditTimeline
         if (!empty($filters['kind'])) { $sql .= ' AND t.session_kind = :kind'; $params[':kind'] = $filters['kind']; }
         if (!empty($filters['direct'])) { $sql .= ' AND t.direct_source = 1'; }
         if (!empty($filters['lb_id'])) { $sql .= ' AND t.lb_id = :lb'; $params[':lb'] = (int) $filters['lb_id']; }
-        if (!empty($filters['only_problems'])) { $sql .= ' AND (t.errors > 0 OR t.inconsistency <> "")'; }
+        if (!empty($filters['only_problems'])) { $sql .= " AND (t.errors > 0 OR t.inconsistency <> '')"; }
         if (!empty($filters['since_minutes'])) {
             $sql .= ' AND t.last_epoch >= :since';
             $params[':since'] = time() - ((int) $filters['since_minutes'] * 60);
@@ -161,14 +161,14 @@ final class AuditTimeline
             $now = time();
             $win = $now - 300;
             $row = $pdo->query(
-                'SELECT COUNT(*) AS sessions,
+                "SELECT COUNT(*) AS sessions,
                         COUNT(DISTINCT username) AS users,
                         COALESCE(SUM(bytes),0) AS bytes,
                         COALESCE(SUM(errors),0) AS errors,
                         SUM(CASE WHEN direct_source = 1 THEN 1 ELSE 0 END) AS direct,
-                        SUM(CASE WHEN inconsistency <> "" THEN 1 ELSE 0 END) AS inconsistent,
-                        SUM(CASE WHEN lb_target = "lb" THEN 1 ELSE 0 END) AS via_lb
-                   FROM cdn_audit_timeline WHERE last_epoch >= ' . $win
+                        SUM(CASE WHEN inconsistency <> '' THEN 1 ELSE 0 END) AS inconsistent,
+                        SUM(CASE WHEN lb_target = 'lb' THEN 1 ELSE 0 END) AS via_lb
+                   FROM cdn_audit_timeline WHERE last_epoch >= " . $win
             )->fetch() ?: [];
             return [
                 'window_seconds' => 300,

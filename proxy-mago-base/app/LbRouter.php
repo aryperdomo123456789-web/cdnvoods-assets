@@ -340,7 +340,7 @@ final class LbRouter
     {
         JobRunner::step('carregar_rotas_auto');
         $rows = Database::pdo()->query(
-            'SELECT username, lb_id FROM lb_user_routes WHERE mode = "auto"'
+            'SELECT username, lb_id FROM lb_user_routes WHERE mode = \'auto\''
         )->fetchAll() ?: [];
 
         JobRunner::step('pontuar_nodes', count($rows) . ' usuário(s) em auto');
@@ -442,8 +442,8 @@ final class LbRouter
             'installed' => $installed,
             'healthy' => $healthy,
             'tx_mbps' => round($tx, 1),
-            'routes_forced' => (int) $pdo->query('SELECT COUNT(*) FROM lb_user_routes WHERE mode = "forced"')->fetchColumn(),
-            'routes_auto' => (int) $pdo->query('SELECT COUNT(*) FROM lb_user_routes WHERE mode = "auto"')->fetchColumn(),
+            'routes_forced' => (int) $pdo->query('SELECT COUNT(*) FROM lb_user_routes WHERE mode = \'forced\'')->fetchColumn(),
+            'routes_auto' => (int) $pdo->query('SELECT COUNT(*) FROM lb_user_routes WHERE mode = \'auto\'')->fetchColumn(),
             'require_delivery' => self::requireDelivery(),
             'default_mode' => self::defaultMode(),
         ];

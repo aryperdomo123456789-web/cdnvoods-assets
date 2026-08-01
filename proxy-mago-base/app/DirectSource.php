@@ -90,7 +90,7 @@ final class DirectSource
         if ($status >= 400) { $failures++; }
         $now = time();
         Database::pdo()->prepare(
-            'UPDATE cdn_sessions
+            "UPDATE cdn_sessions
                 SET direct_source = 1,
                     uptime_start_epoch = CASE
                         WHEN uptime_start_epoch = 0 AND direct_first_epoch > 0 THEN direct_first_epoch
@@ -99,35 +99,35 @@ final class DirectSource
                     END,
                     direct_mode = :m,
                     match_confidence = CASE
-                        WHEN xui_activity_id = 0 AND match_confidence IN ("", "low", "pending")
-                            THEN "medium"
+                        WHEN xui_activity_id = 0 AND match_confidence IN ('', 'low', 'pending')
+                            THEN 'medium'
                         ELSE match_confidence
                     END,
                     match_reason = CASE
-                        WHEN xui_activity_id = 0 AND match_reason IN ("", "orphan_request")
-                            THEN "direct_source_runtime"
+                        WHEN xui_activity_id = 0 AND match_reason IN ('', 'orphan_request')
+                            THEN 'direct_source_runtime'
                         ELSE match_reason
                     END,
                     idle_timeout = CASE
-                        WHEN session_kind = "movie" AND idle_timeout < ' . CdnSession::DIRECT_IDLE['movie'] . '
-                            THEN ' . CdnSession::DIRECT_IDLE['movie'] . '
-                        WHEN session_kind = "series" AND idle_timeout < ' . CdnSession::DIRECT_IDLE['series'] . '
-                            THEN ' . CdnSession::DIRECT_IDLE['series'] . '
-                        WHEN session_kind = "other" AND idle_timeout < ' . CdnSession::DIRECT_IDLE['other'] . '
-                            THEN ' . CdnSession::DIRECT_IDLE['other'] . '
+                        WHEN session_kind = 'movie' AND idle_timeout < " . CdnSession::DIRECT_IDLE['movie'] . "
+                            THEN " . CdnSession::DIRECT_IDLE['movie'] . "
+                        WHEN session_kind = 'series' AND idle_timeout < " . CdnSession::DIRECT_IDLE['series'] . "
+                            THEN " . CdnSession::DIRECT_IDLE['series'] . "
+                        WHEN session_kind = 'other' AND idle_timeout < " . CdnSession::DIRECT_IDLE['other'] . "
+                            THEN " . CdnSession::DIRECT_IDLE['other'] . "
                         ELSE idle_timeout
                     END,
-                    status = "active",
-                    close_reason = "",
+                    status = 'active',
+                    close_reason = '',
                     ended_epoch = 0,
-                    direct_host_db = CASE WHEN :hdb <> "" THEN :hdb2 ELSE direct_host_db END,
-                    direct_host_runtime = CASE WHEN :hrt <> "" THEN :hrt2 ELSE direct_host_runtime END,
-                    direct_host_effective = CASE WHEN :heff <> "" THEN :heff2 ELSE direct_host_effective END,
+                    direct_host_db = CASE WHEN :hdb <> '' THEN :hdb2 ELSE direct_host_db END,
+                    direct_host_runtime = CASE WHEN :hrt <> '' THEN :hrt2 ELSE direct_host_runtime END,
+                    direct_host_effective = CASE WHEN :heff <> '' THEN :heff2 ELSE direct_host_effective END,
                     direct_first_epoch = CASE WHEN direct_first_epoch = 0 THEN :now ELSE direct_first_epoch END,
                     direct_last_epoch = :now2,
                     direct_failures = direct_failures + :f,
                     direct_blocked = direct_blocked + :b
-              WHERE session_key = :k'
+              WHERE session_key = :k"
         )->execute([
             ':m' => $mode, ':hdb' => $hostDb, ':hdb2' => $hostDb,
             ':hrt' => $hostRuntime, ':hrt2' => $hostRuntime,
@@ -159,10 +159,10 @@ final class DirectSource
     {
         $since = time() - ($minutes * 60);
         return Database::pdo()->query(
-            'SELECT to_host AS k, COUNT(*) AS c, MAX(ts) AS last_seen
+            "SELECT to_host AS k, COUNT(*) AS c, MAX(ts) AS last_seen
                FROM direct_source_hops
-              WHERE ts_epoch >= ' . $since . ' AND off_origin = 1 AND outcome = "followed" AND to_host <> ""
-              GROUP BY to_host ORDER BY c DESC LIMIT ' . max(1, min(50, $limit))
+              WHERE ts_epoch >= " . $since . " AND off_origin = 1 AND outcome = 'followed' AND to_host <> ''
+              GROUP BY to_host ORDER BY c DESC LIMIT " . max(1, min(50, $limit))
         )->fetchAll();
     }
 
@@ -171,9 +171,9 @@ final class DirectSource
     {
         $since = time() - ($minutes * 60);
         return Database::pdo()->query(
-            'SELECT * FROM direct_source_hops
-              WHERE ts_epoch >= ' . $since . ' AND outcome <> "followed"
-              ORDER BY id DESC LIMIT ' . max(1, min(200, $limit))
+            "SELECT * FROM direct_source_hops
+              WHERE ts_epoch >= " . $since . " AND outcome <> 'followed'
+              ORDER BY id DESC LIMIT " . max(1, min(200, $limit))
         )->fetchAll();
     }
 

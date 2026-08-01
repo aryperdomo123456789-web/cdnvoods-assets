@@ -64,11 +64,11 @@ final class CdnSession
     {
         return '(CASE
             WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'movie\'
-                THEN ' . $table . '.last_seen_epoch + MAX(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['movie'] . ')
+                THEN ' . $table . '.last_seen_epoch + GREATEST(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['movie'] . ')
             WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'series\'
-                THEN ' . $table . '.last_seen_epoch + MAX(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['series'] . ')
+                THEN ' . $table . '.last_seen_epoch + GREATEST(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['series'] . ')
             WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'other\'
-                THEN ' . $table . '.last_seen_epoch + MAX(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['other'] . ')
+                THEN ' . $table . '.last_seen_epoch + GREATEST(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['other'] . ')
             ELSE ' . $table . '.last_seen_epoch + ' . $table . '.idle_timeout
         END)';
     }
@@ -608,7 +608,7 @@ final class CdnSession
         $internal = '(' . $table . '.client_ip IN (\'127.0.0.1\', \'::1\', \'\', \'-\'))';
         return '(CASE
             WHEN ' . $internal . '
-                THEN ' . $table . '.last_seen_epoch + MIN(' . $table . '.idle_timeout, 180)
+                THEN ' . $table . '.last_seen_epoch + LEAST(' . $table . '.idle_timeout, 180)
             ELSE ' . self::effectiveExpirySql($table) . '
         END)';
     }

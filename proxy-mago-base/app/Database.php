@@ -717,6 +717,90 @@ final class Database
     private static function migratePgsqlHot(PDO $pdo): void
     {
         $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS xui_sync_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                host TEXT NOT NULL DEFAULT '',
+                port INTEGER NOT NULL DEFAULT 3306,
+                database_name TEXT NOT NULL DEFAULT 'xtream_iptvpro',
+                username TEXT NOT NULL DEFAULT '',
+                password TEXT NOT NULL DEFAULT '',
+                api_url TEXT NOT NULL DEFAULT '',
+                api_token TEXT NOT NULL DEFAULT '',
+                use_tls INTEGER NOT NULL DEFAULT 0,
+                sync_enabled INTEGER NOT NULL DEFAULT 0,
+                sync_interval_seconds INTEGER NOT NULL DEFAULT 5,
+                users_interval_seconds INTEGER NOT NULL DEFAULT 60,
+                streams_interval_seconds INTEGER NOT NULL DEFAULT 300,
+                connect_timeout_seconds INTEGER NOT NULL DEFAULT 3,
+                read_timeout_seconds INTEGER NOT NULL DEFAULT 5,
+                last_sync_at TEXT NOT NULL DEFAULT '',
+                last_sync_status TEXT NOT NULL DEFAULT 'never',
+                last_sync_error TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
+            )"
+        );
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS xui_users_cache (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT NOT NULL,
+                password_masked TEXT NOT NULL DEFAULT '',
+                credential_fingerprint TEXT NOT NULL DEFAULT '',
+                max_connections INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                exp_date TEXT NOT NULL DEFAULT '',
+                is_trial INTEGER NOT NULL DEFAULT 0,
+                is_restreamer INTEGER NOT NULL DEFAULT 0,
+                allowed_ips TEXT NOT NULL DEFAULT '',
+                allowed_ua TEXT NOT NULL DEFAULT '',
+                synced_at TEXT NOT NULL DEFAULT ''
+            )"
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_users_username ON xui_users_cache(username)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_users_fp ON xui_users_cache(credential_fingerprint)');
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS cdn_user_ip_lock (
+                username TEXT PRIMARY KEY,
+                allowed_ips TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '',
+                updated_epoch BIGINT NOT NULL DEFAULT 0
+            )"
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_cuil_updated ON cdn_user_ip_lock(updated_epoch)');
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS xui_streams_cache (
+                stream_id BIGINT PRIMARY KEY,
+                type TEXT NOT NULL DEFAULT '',
+                stream_display_name TEXT NOT NULL DEFAULT '',
+                category_id TEXT NOT NULL DEFAULT '',
+                target_container TEXT NOT NULL DEFAULT '',
+                synced_at TEXT NOT NULL DEFAULT ''
+            )"
+        );
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS xui_activity_now_cache (
+                activity_id BIGINT PRIMARY KEY,
+                user_id BIGINT NOT NULL DEFAULT 0,
+                stream_id BIGINT NOT NULL DEFAULT 0,
+                server_id BIGINT NOT NULL DEFAULT 0,
+                user_agent TEXT NOT NULL DEFAULT '',
+                user_ip TEXT NOT NULL DEFAULT '',
+                container TEXT NOT NULL DEFAULT '',
+                date_start BIGINT NOT NULL DEFAULT 0,
+                date_end BIGINT NOT NULL DEFAULT 0,
+                hls_last_read BIGINT NOT NULL DEFAULT 0,
+                hls_end BIGINT NOT NULL DEFAULT 0,
+                synced_at TEXT NOT NULL DEFAULT ''
+            )"
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_act_user ON xui_activity_now_cache(user_id)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_act_ip ON xui_activity_now_cache(user_ip)');
+
+        $pdo->exec(
             'CREATE TABLE IF NOT EXISTS proxy_request_events (
                 id BIGSERIAL PRIMARY KEY,
                 request_id TEXT NOT NULL,
@@ -1019,6 +1103,18 @@ final class Database
         // teria perdido justamente a trilha de rastreabilidade. Declaração com
         // aspas SIMPLES: no Postgres, DEFAULT "" é identificador, não string.
         $drift = [
+            'xui_streams_cache' => [
+                'direct_source' => 'INTEGER NOT NULL DEFAULT 0',
+                'direct_proxy' => 'INTEGER NOT NULL DEFAULT 0',
+                'stream_source_raw' => "TEXT NOT NULL DEFAULT ''",
+                'direct_host_detected' => "TEXT NOT NULL DEFAULT ''",
+                'direct_hosts_json' => "TEXT NOT NULL DEFAULT '[]'",
+                'urls_count' => 'INTEGER NOT NULL DEFAULT 0',
+                'source_mode' => "TEXT NOT NULL DEFAULT 'unknown'",
+                'parse_status' => "TEXT NOT NULL DEFAULT 'pending'",
+                'parse_error' => "TEXT NOT NULL DEFAULT ''",
+                'enriched_epoch' => 'BIGINT NOT NULL DEFAULT 0',
+            ],
             'proxy_request_events' => [
                 'direct_host' => "TEXT NOT NULL DEFAULT ''",
                 'hops' => 'INTEGER NOT NULL DEFAULT 0',
@@ -1057,6 +1153,50 @@ final class Database
                 self::addColumnIfMissing($pdo, $table, $column, $decl);
             }
         }
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS direct_stream_state (
+                stream_id BIGINT PRIMARY KEY,
+                stream_name TEXT NOT NULL DEFAULT '',
+                stream_type TEXT NOT NULL DEFAULT '',
+                direct_flag_db INTEGER NOT NULL DEFAULT 0,
+                direct_proxy INTEGER NOT NULL DEFAULT 0,
+                direct_host_from_db TEXT NOT NULL DEFAULT '',
+                direct_host_runtime TEXT NOT NULL DEFAULT '',
+                direct_host_effective TEXT NOT NULL DEFAULT '',
+                direct_origin_mode TEXT NOT NULL DEFAULT 'none',
+                direct_consistency TEXT NOT NULL DEFAULT 'unknown',
+                parse_status TEXT NOT NULL DEFAULT 'pending',
+                urls_count INTEGER NOT NULL DEFAULT 0,
+                runtime_hits INTEGER NOT NULL DEFAULT 0,
+                runtime_failures INTEGER NOT NULL DEFAULT 0,
+                runtime_last_epoch BIGINT NOT NULL DEFAULT 0,
+                db_synced_epoch BIGINT NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT '',
+                updated_epoch BIGINT NOT NULL DEFAULT 0
+            )"
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dss_mode ON direct_stream_state(direct_origin_mode)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dss_cons ON direct_stream_state(direct_consistency)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dss_host ON direct_stream_state(direct_host_effective)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_dss_mode_cons ON direct_stream_state(direct_origin_mode, direct_consistency)');
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS lb_route_history (
+                id BIGSERIAL PRIMARY KEY,
+                username TEXT NOT NULL,
+                from_lb_id BIGINT NOT NULL DEFAULT 0,
+                to_lb_id BIGINT NOT NULL DEFAULT 0,
+                mode TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                score DOUBLE PRECISION NOT NULL DEFAULT 0,
+                trigger_source TEXT NOT NULL DEFAULT '',
+                ts_epoch BIGINT NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT ''
+            )"
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_lbrh_user ON lb_route_history(username, id)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_lbrh_ts ON lb_route_history(ts_epoch)');
     }
 
     /**

@@ -165,7 +165,7 @@ final class AccessGuard
             $pdo = Database::pdo();
             $pdo->prepare(
                 'INSERT INTO rate_limit (client_ip, window_start, hits) VALUES (:ip, :w, 1)
-                 ON CONFLICT(client_ip, window_start) DO UPDATE SET hits = hits + 1'
+                 ON CONFLICT(client_ip, window_start) DO UPDATE SET hits = rate_limit.hits + 1'
             )->execute([':ip' => $ip, ':w' => $window]);
             $stmt = $pdo->prepare('SELECT hits FROM rate_limit WHERE client_ip = :ip AND window_start = :w');
             $stmt->execute([':ip' => $ip, ':w' => $window]);

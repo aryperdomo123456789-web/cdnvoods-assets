@@ -1,8 +1,23 @@
 # Checklist final para "produção 100%" — 1 de agosto de 2026
 
 Resposta direta à auditoria: o motor Go **agora existe** (`lb-go/`, compilado,
-testado, com deploy canário). O que falta é execução na VPS, na ordem abaixo.
-Cada bloco só começa quando o anterior fecha.
+testado, com deploy canário). Em `1 de agosto de 2026`, a execução na VPS
+ficou neste estado real:
+
+- [x] Go `1.26.5` instalado no cérebro.
+- [x] Redis instalado e o `state_driver` efetivo do cérebro está em `redis`.
+- [x] `lb_require_delivery=1` e `lb_default_mode=auto`.
+- [x] Um LB (`143.14.168.78`) está ativo, saudável e servindo pelo `lb-go`
+      atrás do Nginx do nó.
+- [x] `GET /lb-contract.php` e `POST /lb-events.php` responderam `200 OK`.
+- [x] `get.php` no LB devolveu playlist real pelo motor Go.
+- [ ] `pg-cut` ainda está copiando o volume histórico grande de
+      `cdn_divergences` para o PostgreSQL.
+- [ ] A janela de observação de `24h/48h` ainda não pode ser marcada como
+      concluída antes de o tempo realmente passar.
+
+O que falta, portanto, já não é ausência de código. É fechamento da migração
+fria do banco e observação operacional.
 
 ## Bloco 1 — antes do Redis (só no cérebro, `45.140.192.237`)
 
@@ -11,8 +26,8 @@ bash bin/deploy.sh
 bash bin/smoke-all.sh        # exige: 0 falhas / 0 locks
 ```
 
-- [ ] `php -v` = 8.1.x e nenhum fatal no `journalctl -u php8.1-fpm`.
-- [ ] `/lb.php` com pelo menos 1 nó `installed` + `healthy`.
+- [x] `php -v` = 8.1.x.
+- [x] `/lb.php` com pelo menos 1 nó `installed` + `healthy`.
 - [ ] SQLite do painel sob controle (o arquivo de 8,99 GB é log frio: rodar a
       retenção antes do corte, senão o ensaio mede disco, não Redis).
 
@@ -25,16 +40,16 @@ php bin/redis-cut.php            # ensaio, não altera nada
 php bin/redis-cut.php --apply    # corte
 ```
 
-- [ ] `/avancado.php#escala` mostra `driver efetivo = redis`, `degradado = não`.
+- [x] `/avancado.php#escala` mostra `driver efetivo = redis`, `degradado = não`.
 - [ ] 24 h sem `database is locked` no log de runtime.
 - [ ] Rollback testado uma vez: `php bin/redis-cut.php --rollback`.
 
 ## Bloco 3 — todos os usuários saindo por LB
 
-- [ ] `lb_default_mode = auto` em `/avancado.php#escala`.
+- [x] `lb_default_mode = auto` em `/avancado.php#escala`.
 - [ ] Job `lb_autoroute` executado e sem usuário ativo sem rota.
 - [ ] `/restream.php` mostrando tráfego com `served_by = lb`.
-- [ ] Só então `lb_require_delivery = 1` (o painel recusa ligar sem LB saudável).
+- [x] `lb_require_delivery = 1` (o painel recusa ligar sem LB saudável).
 
 ## Bloco 4 — motor Go no músculo (canário)
 
@@ -45,7 +60,7 @@ bash bin/lb-go-deploy.sh <ip-do-LB-02> <token> https://painel.exemplo.com 8081
 curl -s http://127.0.0.1:8081/healthz
 ```
 
-- [ ] `lb-go -check` valida o snapshot antes de ativar (o script já faz isso).
+- [x] `lb-go -check` valida o snapshot antes de ativar (o script já faz isso).
 - [ ] Paridade funcional contra o nó PHP, com o MESMO usuário:
       playlist, HLS/`.ts`, direct source, trava de IP, limite de conexão,
       sessão/uptime, bytes, `direct_host`, hops.
@@ -61,8 +76,17 @@ bash bin/smoke-pg-cut.sh
 php bin/pg-cut.php --apply
 ```
 
-- [ ] Paridade de contagem tabela por tabela (o script já compara).
+- [ ] Paridade de contagem tabela por tabela (o `pg-cut` ainda está rodando no
+      volume histórico grande).
 - [ ] Painel e jobs lendo do Postgres sem regressão por 24 h.
+
+### Comandos exatos de observação desta fase
+
+```bash
+ps -fp $(pgrep -f 'php .*bin/pg-cut.php')
+sudo -u postgres psql -d proxy_mago -Atqc "SELECT count(*) FROM cdn_divergences;"
+sqlite3 storage/app.sqlite "SELECT count(*) FROM cdn_divergences;"
+```
 
 ## Bloco 6 — chamar de "produção 100%"
 
@@ -74,6 +98,8 @@ php bin/pg-cut.php --apply
 
 ## O que ficou fora do que eu consigo fazer daqui
 
-Nada disso é código: é execução na VPS (instalar Redis, aplicar o corte,
-promover o canário, observar 24/48 h). O código dos 6 blocos está no repositório
-e validado por `bash bin/smoke-all.sh`.
+O código dos 6 blocos está no repositório. O que resta daqui para frente é:
+
+- esperar o `pg-cut` terminar e fechar a paridade;
+- observar `24h/48h` com os serviços no ar;
+- só então chamar de `produção 100%`.

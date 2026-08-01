@@ -101,18 +101,18 @@ final class XuiSyncService
         $batchCount = 0;
         try {
             $stmt = $pdo->prepare(
-                'INSERT INTO xui_streams_cache
+                "INSERT INTO xui_streams_cache
                    (stream_id, type, stream_display_name, category_id, target_container,
                     direct_source, direct_proxy, stream_source_raw, parse_status, synced_at)
-                 VALUES (:id,:t,:n,:c,:tc,:ds,:dp,:src,"pending",:sy)
+                 VALUES (:id,:t,:n,:c,:tc,:ds,:dp,:src,'pending',:sy)
                  ON CONFLICT(stream_id) DO UPDATE SET type=excluded.type,
                    stream_display_name=excluded.stream_display_name, category_id=excluded.category_id,
                    target_container=excluded.target_container,
                    direct_source=excluded.direct_source, direct_proxy=excluded.direct_proxy,
                    stream_source_raw=excluded.stream_source_raw,
                    parse_status=CASE WHEN xui_streams_cache.stream_source_raw = excluded.stream_source_raw
-                                     THEN xui_streams_cache.parse_status ELSE "pending" END,
-                   synced_at=excluded.synced_at'
+                                     THEN xui_streams_cache.parse_status ELSE 'pending' END,
+                   synced_at=excluded.synced_at"
             );
             $now = date('c');
             foreach ($rows as $r) {

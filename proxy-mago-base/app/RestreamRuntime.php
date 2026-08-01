@@ -46,18 +46,18 @@ final class RestreamRuntime
         $since = time() - 300;
         JobRunner::step('carregar_eventos_pendentes');
         $events = $pdo->query(
-            'SELECT request_id, username, credential_fingerprint, client_ip, user_agent,
+            "SELECT request_id, username, credential_fingerprint, client_ip, user_agent,
                     stream_id, ts_epoch, session_key, route_kind, status, reason
              FROM proxy_request_events
-             WHERE ts_epoch >= ' . $since . '
-               AND match_confidence IN (\'pending\',\'low\')
+             WHERE ts_epoch >= " . $since . "
+               AND match_confidence IN ('pending','low')
                AND (
                     status BETWEEN 200 AND 399
-                    OR (status = 0 AND session_key <> \'\')
+                    OR (status = 0 AND session_key <> '')
                )
-               AND username <> ""
-               AND ' . self::protectedHostSql('public_host') . '
-             ORDER BY id DESC LIMIT 500'
+               AND username <> ''
+               AND " . self::protectedHostSql('public_host') . "
+             ORDER BY id DESC LIMIT 500"
         )->fetchAll();
         JobRunner::step('cruzar_com_xui', count($events) . ' evento(s)');
 
@@ -222,7 +222,7 @@ final class RestreamRuntime
                            COALESCE(SUM(bytes), 0) AS bytes
                       FROM proxy_request_events
                      WHERE ts_epoch >= ' . $since . '
-                       AND username <> ""
+                       AND username <> \'\'
                        AND status BETWEEN 200 AND 399
                        AND ' . self::protectedHostSql('public_host') . '
                      GROUP BY username
@@ -232,7 +232,7 @@ final class RestreamRuntime
                            0 AS reqs,
                            0 AS bytes
                       FROM cdn_sessions
-                     WHERE username <> ""
+                     WHERE username <> \'\'
                        AND ' . CdnSession::activeWhereSql(time()) . '
                        AND ' . CdnSession::publicClientWhereSql() . '
                      GROUP BY username
@@ -515,6 +515,15 @@ final class RestreamRuntime
             Divergence::raise('-', 'sync_stale', 'warn',
                 'Espelho do XUI sem sincronizar há mais de 2 minutos; contagem oficial fica só com a CDN',
                 ['last_sync' => (string) ($cfg['last_sync_at'] ?? ''), 'status' => (string) ($cfg['last_sync_status'] ?? '')]);
+        } else {
+            Database::pdo()->prepare(
+                "UPDATE cdn_divergences
+                    SET status = 'closed',
+                        closed_epoch = :now
+                  WHERE username = '-'
+                    AND kind = 'sync_stale'
+                    AND status = 'open'"
+            )->execute([':now' => time()]);
         }
 
         $closed = Divergence::closeStale(300);
@@ -910,7 +919,7 @@ final class RestreamRuntime
                 'SELECT COUNT(DISTINCT username) FROM cdn_sessions
                   WHERE ' . CdnSession::activeWhereSql($now) . '
                     AND ' . CdnSession::publicClientWhereSql() . '
-                    AND username <> ""'
+                    AND username <> \'\''
             )->fetchColumn();
             $directNow = (int) $pdo->query(
                 'SELECT COUNT(*) FROM cdn_sessions
@@ -922,12 +931,12 @@ final class RestreamRuntime
         }
 
         $conf = $pdo->query(
-            'SELECT match_confidence AS k, COUNT(*) AS c
+            "SELECT match_confidence AS k, COUNT(*) AS c
                FROM cdn_sessions
-              WHERE ' . CdnSession::activeWhereSql($now) . '
-                AND ' . CdnSession::publicClientWhereSql() . '
-                AND username <> ""
-              GROUP BY match_confidence'
+              WHERE " . CdnSession::activeWhereSql($now) . "
+                AND " . CdnSession::publicClientWhereSql() . "
+                AND username <> ''
+              GROUP BY match_confidence"
         )->fetchAll();
         $byConf = ['high' => 0, 'medium' => 0, 'low' => 0, 'pending' => 0, 'invalid' => 0];
         foreach ($conf as $c) { $byConf[(string) $c['k']] = (int) $c['c']; }
@@ -1021,12 +1030,12 @@ final class RestreamRuntime
         $pdo = Database::pdo();
         $since = time() - 1800;
         $pdo->exec(
-            'UPDATE proxy_request_events SET match_confidence = \'pending\'
-             WHERE ts_epoch >= ' . $since . '
-               AND match_confidence = \'low\'
-               AND username <> ""
-               AND ' . self::protectedHostSql('public_host') . '
-               AND request_id NOT IN (SELECT request_id FROM proxy_session_links)'
+            "UPDATE proxy_request_events SET match_confidence = 'pending'
+             WHERE ts_epoch >= " . $since . "
+               AND match_confidence = 'low'
+               AND username <> ''
+               AND " . self::protectedHostSql('public_host') . "
+               AND request_id NOT IN (SELECT request_id FROM proxy_session_links)"
         );
         $stats['processed'] = (int) $pdo->query(
             'SELECT COUNT(*) FROM proxy_request_events
@@ -1215,7 +1224,7 @@ final class RestreamRuntime
         $ips->execute([':u' => $username]);
         $players = $pdo->prepare('SELECT user_agent AS k, COUNT(*) AS c, MAX(ts) AS last FROM proxy_request_events WHERE username = :u AND ' . self::protectedHostSql('public_host') . ' GROUP BY user_agent ORDER BY c DESC LIMIT 20');
         $players->execute([':u' => $username]);
-        $divs = $pdo->prepare('SELECT * FROM proxy_request_events WHERE username = :u AND inconsistency <> "" AND ' . self::protectedHostSql('public_host') . ' ORDER BY id DESC LIMIT 50');
+        $divs = $pdo->prepare("SELECT * FROM proxy_request_events WHERE username = :u AND inconsistency <> '' AND " . self::protectedHostSql('public_host') . ' ORDER BY id DESC LIMIT 50');
         $divs->execute([':u' => $username]);
 
         return [
@@ -1242,7 +1251,7 @@ final class RestreamRuntime
             if (!empty($filters[$f])) { $sql .= " AND $col LIKE :$f"; $params[":$f"] = '%' . $filters[$f] . '%'; }
         }
         if (!empty($filters['kind'])) { $sql .= ' AND route_kind = :kind'; $params[':kind'] = $filters['kind']; }
-        if (!empty($filters['only_problems'])) { $sql .= ' AND (status >= 400 OR inconsistency <> "")'; }
+        if (!empty($filters['only_problems'])) { $sql .= " AND (status >= 400 OR inconsistency <> '')"; }
         if (!empty($filters['current_only'])) { $sql .= ' AND ts_epoch >= :since'; $params[':since'] = time() - 300; }
         $sql .= ' ORDER BY id DESC LIMIT ' . max(1, min(1000, $limit));
         $stmt = Database::pdo()->prepare($sql);

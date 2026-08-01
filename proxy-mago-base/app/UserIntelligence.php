@@ -33,7 +33,9 @@ final class UserIntelligence
         $key = 'users_' . md5(json_encode([$filters, $limit], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         return Cache::remember($key, 3, static function () use ($filters, $limit): array {
             $now = time();
+            $recentCut = $now - 120;
             $activeWhere = CdnSession::activeWhereSql($now);
+            $publicClientWhere = CdnSession::publicClientWhereSql();
             $runtimeUptimeSql = Database::tableHasColumn('proxy_user_runtime', 'uptime_start_epoch')
                 ? 'COALESCE(r.uptime_start_epoch, 0)'
                 : '0';
@@ -49,13 +51,38 @@ final class UserIntelligence
                             WHEN lb_id > 0 THEN COALESCE(lb.label, lb.public_ip, "LB#" || lb_id)
                             ELSE "main"
                          END)';
-            $sql = 'SELECT
-                  u.user_id, u.username, u.max_connections, u.enabled, u.exp_date,
-                  u.is_trial, u.is_restreamer, u.synced_at,
+            $sql = 'WITH base_users AS (
+                    SELECT username FROM xui_users_cache
+                    UNION
+                    SELECT username
+                      FROM proxy_user_runtime
+                     WHERE username <> \'\'
+                       AND (
+                            last_activity_epoch >= ' . $recentCut . '
+                            OR requests_5m > 0
+                            OR active_connections_now > 0
+                            OR xui_connections_now > 0
+                       )
+                    UNION
+                    SELECT username
+                      FROM cdn_sessions
+                     WHERE ' . $activeWhere . '
+                       AND ' . $publicClientWhere . '
+                       AND username <> \'\'
+                )
+                SELECT
+                  COALESCE(u.user_id, r.user_id, 0) AS user_id,
+                  b.username,
+                  COALESCE(u.max_connections, r.max_connections, 0) AS max_connections,
+                  COALESCE(u.enabled, 1) AS enabled,
+                  COALESCE(u.exp_date, \'\') AS exp_date,
+                  COALESCE(u.is_trial, 0) AS is_trial,
+                  COALESCE(u.is_restreamer, 0) AS is_restreamer,
+                  COALESCE(u.synced_at, \'\') AS synced_at,
                   COALESCE(v.c, 0)  AS cdn_connections_now,
                   COALESCE(v.fc, 0) AS fetch_sessions_now,
                   COALESCE(v.dc, 0) AS direct_sessions_now,
-                  COALESCE(x.c, 0)  AS xui_connections_now,
+                  COALESCE(x.c, COALESCE(r.xui_connections_now, 0)) AS xui_connections_now,
                   COALESCE(v.bytes, 0) AS bytes_now,
                   COALESCE(r.public_host_last_seen, \'\') AS last_host,
                   COALESCE(r.client_ip_last_seen, \'\')   AS last_ip,
@@ -71,7 +98,7 @@ final class UserIntelligence
                   COALESCE(route.lb_id, 0)              AS route_lb_id,
                   COALESCE(route.mode, \'main_only\')   AS route_mode,
                   COALESCE(route_lb.label, CASE WHEN COALESCE(route.lb_id, 0) > 0 THEN route_lb.public_ip ELSE \'main\' END, \'main\') AS route_lb_label
-                FROM xui_users_cache u
+                FROM base_users b
                 -- Uma passada só nas sessões ativas: antes eram 3 subqueries
                 -- idênticas (vídeo, fetch, direct) varrendo cdn_sessions.
                 LEFT JOIN (
@@ -87,28 +114,45 @@ final class UserIntelligence
                    WHERE ' . $activeWhere . '
                      AND ' . CdnSession::publicClientWhereSql() . '
                    GROUP BY username
-                ) v ON v.username = u.username
+                ) v ON v.username = b.username
+                LEFT JOIN xui_users_cache u ON u.username = b.username
+                LEFT JOIN proxy_user_runtime r ON r.username = b.username
                 LEFT JOIN (
                   SELECT user_id, COUNT(*) c FROM xui_activity_now_cache GROUP BY user_id
-                ) x ON x.user_id = u.user_id
-                LEFT JOIN proxy_user_runtime r ON r.username = u.username
-                LEFT JOIN lb_user_routes route ON route.username = u.username
+                ) x ON x.user_id = COALESCE(u.user_id, r.user_id, 0)
+                LEFT JOIN lb_user_routes route ON route.username = b.username
                 LEFT JOIN lb_nodes route_lb ON route_lb.id = route.lb_id
                 WHERE 1=1';
             $params = [];
             if (!empty($filters['q'])) {
-                $sql .= ' AND u.username LIKE :q';
+                $sql .= ' AND b.username LIKE :q';
                 $params[':q'] = '%' . $filters['q'] . '%';
             }
-            if (!empty($filters['enabled_only'])) { $sql .= ' AND u.enabled = 1'; }
+            if (!empty($filters['enabled_only'])) { $sql .= ' AND COALESCE(u.enabled, 1) = 1'; }
             if (!empty($filters['only_active'])) {
-                $sql .= ' AND (COALESCE(v.c,0) > 0 OR COALESCE(v.fc,0) > 0 OR COALESCE(x.c,0) > 0)';
+                $sql .= ' AND (
+                    COALESCE(v.c,0) > 0
+                    OR COALESCE(v.fc,0) > 0
+                    OR COALESCE(x.c,0) > 0
+                    OR (
+                        COALESCE(r.last_activity_epoch,0) >= :recent_cut
+                        AND (
+                            COALESCE(r.requests_5m,0) > 0
+                            OR COALESCE(r.bytes_5m,0) > 0
+                            OR COALESCE(r.client_ip_last_seen, \'\') <> \'\'
+                        )
+                    )
+                )';
+                $params[':recent_cut'] = $recentCut;
             }
+            $peakUsageSql = Database::isPgsql()
+                ? 'GREATEST(COALESCE(v.c,0), COALESCE(x.c,0))'
+                : 'MAX(COALESCE(v.c,0), COALESCE(x.c,0))';
             if (!empty($filters['over_limit'])) {
-                $sql .= ' AND u.max_connections > 0 AND MAX(COALESCE(v.c,0), COALESCE(x.c,0)) > u.max_connections';
+                $sql .= ' AND COALESCE(u.max_connections, r.max_connections, 0) > 0 AND ' . $peakUsageSql . ' > COALESCE(u.max_connections, r.max_connections, 0)';
             }
-            $sql .= ' ORDER BY MAX(COALESCE(v.c,0), COALESCE(x.c,0)) DESC,
-                           COALESCE(r.last_activity_epoch,0) DESC, u.username ASC
+            $sql .= ' ORDER BY ' . $peakUsageSql . ' DESC,
+                           COALESCE(r.last_activity_epoch,0) DESC, b.username ASC
                   LIMIT ' . max(1, min(2000, $limit));
 
             $st = Database::pdo()->prepare($sql);
@@ -125,7 +169,18 @@ final class UserIntelligence
                 $r['usage_pct'] = $max > 0 ? (int) round($used * 100 / $max) : 0;
                 $r['divergence'] = $cdn - $xui;
                 $r['count_source'] = $cdn === $xui ? 'merged' : ($cdn > $xui ? 'cdn_local' : 'xui_activity_now');
-                $r['online'] = $used > 0 || (int) $r['fetch_sessions_now'] > 0;
+                $lastEpoch = (int) ($r['last_epoch'] ?? 0);
+                $lastKind = strtolower(trim((string) ($r['last_kind'] ?? '')));
+                $recentActivity = $lastEpoch >= $recentCut
+                    && (
+                        (int) ($r['requests_5m'] ?? 0) > 0
+                        || (int) ($r['bytes_5m'] ?? 0) > 0
+                        || trim((string) ($r['last_ip'] ?? '')) !== ''
+                    );
+                $recentFetch = $recentActivity && in_array($lastKind, ['playlist', 'api', 'm3u'], true);
+                $r['recent_activity'] = $recentActivity ? 1 : 0;
+                $r['recent_fetch'] = $recentFetch ? 1 : 0;
+                $r['online'] = $used > 0 || (int) $r['fetch_sessions_now'] > 0 || $recentActivity;
                 $r['status'] = self::statusOf($r, $used, $max);
             }
             unset($r);
@@ -142,6 +197,8 @@ final class UserIntelligence
         if ($max > 0 && $used === $max && $used > 0) { return 'full'; }
         if ($used > 0) { return 'streaming'; }
         if ((int) $r['fetch_sessions_now'] > 0) { return 'fetching'; }
+        if ((int) ($r['recent_fetch'] ?? 0) === 1) { return 'recent_fetch'; }
+        if ((int) ($r['recent_activity'] ?? 0) === 1) { return 'recent'; }
         return 'idle';
     }
 

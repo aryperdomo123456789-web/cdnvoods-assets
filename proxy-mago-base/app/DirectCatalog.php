@@ -106,13 +106,13 @@ final class DirectCatalog
         // Runtime: host final mais recente por stream, com hits e falhas.
         $runtime = [];
         $rt = $pdo->query(
-            'SELECT stream_id,
-                    SUM(CASE WHEN outcome = "followed" THEN 1 ELSE 0 END) AS hits,
-                    SUM(CASE WHEN outcome <> "followed" THEN 1 ELSE 0 END) AS failures,
+            "SELECT stream_id,
+                    SUM(CASE WHEN outcome = 'followed' THEN 1 ELSE 0 END) AS hits,
+                    SUM(CASE WHEN outcome <> 'followed' THEN 1 ELSE 0 END) AS failures,
                     MAX(ts_epoch) AS last_epoch
                FROM direct_source_hops
-              WHERE ts_epoch >= ' . $window . ' AND off_origin = 1 AND stream_id > 0
-              GROUP BY stream_id'
+              WHERE ts_epoch >= " . $window . " AND off_origin = 1 AND stream_id > 0
+              GROUP BY stream_id"
         )->fetchAll();
         foreach ($rt as $r) {
             $runtime[(int) $r['stream_id']] = [
@@ -125,11 +125,11 @@ final class DirectCatalog
         if ($runtime !== []) {
             $ids = implode(',', array_map('intval', array_keys($runtime)));
             $hosts = $pdo->query(
-                'SELECT stream_id, to_host, MAX(ts_epoch) AS last_epoch
+                "SELECT stream_id, to_host, MAX(ts_epoch) AS last_epoch
                    FROM direct_source_hops
-                  WHERE ts_epoch >= ' . $window . ' AND off_origin = 1 AND outcome = "followed"
-                    AND to_host <> "" AND stream_id IN (' . $ids . ')
-                  GROUP BY stream_id'
+                  WHERE ts_epoch >= " . $window . " AND off_origin = 1 AND outcome = 'followed'
+                    AND to_host <> '' AND stream_id IN (" . $ids . ")
+                  GROUP BY stream_id, to_host"
             )->fetchAll();
             foreach ($hosts as $h) {
                 $runtime[(int) $h['stream_id']]['host'] = (string) $h['to_host'];
@@ -271,11 +271,11 @@ final class DirectCatalog
     {
         $pdo = Database::pdo();
         $rows = $pdo->query(
-            'SELECT session_key, username, direct_host_effective, direct_host_runtime, stream_id
+            "SELECT session_key, username, direct_host_effective, direct_host_runtime, stream_id
                FROM cdn_sessions
-              WHERE direct_source = 1 AND status = "active"
+              WHERE direct_source = 1 AND status = 'active'
                 AND (stream_id = 0 OR stream_id NOT IN (SELECT stream_id FROM direct_stream_state))
-              LIMIT 200'
+              LIMIT 200"
         )->fetchAll();
         foreach ($rows as $r) {
             Divergence::raise((string) $r['username'], 'direct_orphan_session', 'info',
@@ -298,23 +298,23 @@ final class DirectCatalog
         $pdo = Database::pdo();
         $bucket = (int) (floor($now / 300) * 300);
         $rows = $pdo->query(
-            'SELECT to_host AS host,
-                    SUM(CASE WHEN outcome = "followed" THEN 1 ELSE 0 END) AS hits,
-                    SUM(CASE WHEN outcome <> "followed" THEN 1 ELSE 0 END) AS failures,
+            "SELECT to_host AS host,
+                    SUM(CASE WHEN outcome = 'followed' THEN 1 ELSE 0 END) AS hits,
+                    SUM(CASE WHEN outcome <> 'followed' THEN 1 ELSE 0 END) AS failures,
                     COUNT(DISTINCT username) AS users,
                     COUNT(DISTINCT stream_id) AS streams
                FROM direct_source_hops
-              WHERE ts_epoch >= ' . $bucket . ' AND ts_epoch < ' . ($bucket + 300) . '
-                AND off_origin = 1 AND to_host <> ""
-              GROUP BY to_host'
+              WHERE ts_epoch >= " . $bucket . " AND ts_epoch < " . ($bucket + 300) . "
+                AND off_origin = 1 AND to_host <> ''
+              GROUP BY to_host"
         )->fetchAll();
 
         $ins = $pdo->prepare(
-            'INSERT INTO direct_host_rollup (host, bucket_epoch, direct_mode, hits, failures, users, streams, updated_epoch)
-             VALUES (:h,:b,"runtime",:hits,:f,:u,:s,:ue)
+            "INSERT INTO direct_host_rollup (host, bucket_epoch, direct_mode, hits, failures, users, streams, updated_epoch)
+             VALUES (:h,:b,'runtime',:hits,:f,:u,:s,:ue)
              ON CONFLICT(host, bucket_epoch, direct_mode) DO UPDATE SET
                hits=excluded.hits, failures=excluded.failures, users=excluded.users,
-               streams=excluded.streams, updated_epoch=excluded.updated_epoch'
+               streams=excluded.streams, updated_epoch=excluded.updated_epoch"
         );
         foreach ($rows as $r) {
             $ins->execute([
@@ -325,14 +325,14 @@ final class DirectCatalog
         }
         // Hosts vindos do DB, sem runtime: contabilizados como catálogo.
         $dbRows = $pdo->query(
-            'SELECT direct_host_from_db AS host, COUNT(*) AS streams FROM direct_stream_state
-              WHERE direct_host_from_db <> "" GROUP BY direct_host_from_db'
+            "SELECT direct_host_from_db AS host, COUNT(*) AS streams FROM direct_stream_state
+              WHERE direct_host_from_db <> '' GROUP BY direct_host_from_db"
         )->fetchAll();
         $insDb = $pdo->prepare(
-            'INSERT INTO direct_host_rollup (host, bucket_epoch, direct_mode, hits, failures, users, streams, updated_epoch)
-             VALUES (:h,:b,"db",0,0,0,:s,:ue)
+            "INSERT INTO direct_host_rollup (host, bucket_epoch, direct_mode, hits, failures, users, streams, updated_epoch)
+             VALUES (:h,:b,'db',0,0,0,:s,:ue)
              ON CONFLICT(host, bucket_epoch, direct_mode) DO UPDATE SET
-               streams=excluded.streams, updated_epoch=excluded.updated_epoch'
+               streams=excluded.streams, updated_epoch=excluded.updated_epoch"
         );
         foreach ($dbRows as $r) {
             $insDb->execute([':h' => (string) $r['host'], ':b' => $bucket, ':s' => (int) $r['streams'], ':ue' => $now]);
@@ -347,7 +347,7 @@ final class DirectCatalog
     private static function backfillSessions(int $now): void
     {
         Database::pdo()->exec(
-            'UPDATE cdn_sessions
+            "UPDATE cdn_sessions
                 SET direct_source = 1,
                     uptime_start_epoch = CASE
                         WHEN uptime_start_epoch = 0 AND direct_first_epoch > 0 THEN direct_first_epoch
@@ -355,15 +355,15 @@ final class DirectCatalog
                         ELSE uptime_start_epoch
                     END,
                     direct_host_db = COALESCE((SELECT direct_host_from_db FROM direct_stream_state d
-                                                WHERE d.stream_id = cdn_sessions.stream_id), ""),
-                    direct_host_effective = CASE WHEN direct_host_runtime <> "" THEN direct_host_runtime
+                                                WHERE d.stream_id = cdn_sessions.stream_id), ''),
+                    direct_host_effective = CASE WHEN direct_host_runtime <> '' THEN direct_host_runtime
                         ELSE COALESCE((SELECT direct_host_from_db FROM direct_stream_state d
-                                        WHERE d.stream_id = cdn_sessions.stream_id), "") END,
-                    direct_mode = CASE WHEN direct_host_runtime <> "" THEN "db_runtime" ELSE "db_only" END,
-                    direct_first_epoch = CASE WHEN direct_first_epoch = 0 THEN ' . $now . ' ELSE direct_first_epoch END,
-                    direct_last_epoch = ' . $now . '
-              WHERE status = "active" AND stream_id > 0
-                AND stream_id IN (SELECT stream_id FROM direct_stream_state WHERE direct_flag_db = 1)'
+                                        WHERE d.stream_id = cdn_sessions.stream_id), '') END,
+                    direct_mode = CASE WHEN direct_host_runtime <> '' THEN 'db_runtime' ELSE 'db_only' END,
+                    direct_first_epoch = CASE WHEN direct_first_epoch = 0 THEN " . $now . " ELSE direct_first_epoch END,
+                    direct_last_epoch = " . $now . "
+              WHERE status = 'active' AND stream_id > 0
+                AND stream_id IN (SELECT stream_id FROM direct_stream_state WHERE direct_flag_db = 1)"
         );
     }
 
@@ -454,10 +454,10 @@ final class DirectCatalog
         // Uma varredura por tabela em vez de 3 + 3: com 484k streams cada
         // COUNT separado custava centenas de ms no painel.
         $s = $pdo->query(
-            'SELECT COUNT(*) AS streams_db,
-                    SUM(CASE WHEN parse_status = "ok" THEN 1 ELSE 0 END) AS streams_parsed,
-                    SUM(CASE WHEN parse_status IN ("bad_json","unsupported","no_host") THEN 1 ELSE 0 END) AS parse_errors
-               FROM xui_streams_cache WHERE direct_source = 1'
+            "SELECT COUNT(*) AS streams_db,
+                    SUM(CASE WHEN parse_status = 'ok' THEN 1 ELSE 0 END) AS streams_parsed,
+                    SUM(CASE WHEN parse_status IN ('bad_json','unsupported','no_host') THEN 1 ELSE 0 END) AS parse_errors
+               FROM xui_streams_cache WHERE direct_source = 1"
         )->fetch() ?: [];
         $out = [
             'streams_db' => (int) ($s['streams_db'] ?? 0),
@@ -467,16 +467,16 @@ final class DirectCatalog
         ];
         $mismatch = 0;
         foreach ($pdo->query(
-            'SELECT direct_origin_mode AS m, COUNT(*) AS c,
-                    SUM(CASE WHEN direct_consistency = "mismatch" THEN 1 ELSE 0 END) AS mm
-               FROM direct_stream_state GROUP BY direct_origin_mode'
+            "SELECT direct_origin_mode AS m, COUNT(*) AS c,
+                    SUM(CASE WHEN direct_consistency = 'mismatch' THEN 1 ELSE 0 END) AS mm
+               FROM direct_stream_state GROUP BY direct_origin_mode"
         )->fetchAll() as $r) {
             if (isset($out[(string) $r['m']])) { $out[(string) $r['m']] = (int) $r['c']; }
             $mismatch += (int) $r['mm'];
         }
         $out['mismatch'] = $mismatch;
         $out['hosts_effective'] = (int) $pdo->query(
-            'SELECT COUNT(*) FROM (SELECT 1 FROM direct_stream_state WHERE direct_host_effective <> "" GROUP BY direct_host_effective)'
+            "SELECT COUNT(*) FROM (SELECT 1 FROM direct_stream_state WHERE direct_host_effective <> '' GROUP BY direct_host_effective) t"
         )->fetchColumn();
         return $out;
     }
@@ -514,11 +514,11 @@ final class DirectCatalog
     {
         $since = time() - ($minutes * 60);
         return Database::pdo()->query(
-            'SELECT to_host AS host, COUNT(*) AS failures, MAX(ts) AS last_seen,
+            "SELECT to_host AS host, COUNT(*) AS failures, MAX(ts) AS last_seen,
                     COUNT(DISTINCT username) AS users, COUNT(DISTINCT stream_id) AS streams
                FROM direct_source_hops
-              WHERE ts_epoch >= ' . $since . ' AND outcome <> "followed"
-              GROUP BY to_host ORDER BY failures DESC LIMIT ' . max(1, min(100, $limit))
+              WHERE ts_epoch >= " . $since . " AND outcome <> 'followed'
+              GROUP BY to_host ORDER BY failures DESC LIMIT " . max(1, min(100, $limit))
         )->fetchAll();
     }
 
@@ -527,15 +527,15 @@ final class DirectCatalog
     {
         $now = time();
         return Database::pdo()->query(
-            'SELECT username, COUNT(*) AS sessions,
-                    GROUP_CONCAT(DISTINCT direct_host_effective) AS hosts,
+            "SELECT username, COUNT(*) AS sessions,
+                    STRING_AGG(DISTINCT direct_host_effective, ',') AS hosts,
                     MAX(direct_last_epoch) AS last_epoch,
-                    GROUP_CONCAT(DISTINCT direct_mode) AS modes,
+                    STRING_AGG(DISTINCT direct_mode, ',') AS modes,
                     SUM(direct_failures) AS failures
                FROM cdn_sessions
-              WHERE status = "active" AND direct_source = 1
-                AND (last_seen_epoch + idle_timeout) >= ' . $now . '
-              GROUP BY username ORDER BY sessions DESC, last_epoch DESC LIMIT ' . max(1, min(200, $limit))
+              WHERE status = 'active' AND direct_source = 1
+                AND (last_seen_epoch + idle_timeout) >= " . $now . "
+              GROUP BY username ORDER BY sessions DESC, last_epoch DESC LIMIT " . max(1, min(200, $limit))
         )->fetchAll();
     }
 

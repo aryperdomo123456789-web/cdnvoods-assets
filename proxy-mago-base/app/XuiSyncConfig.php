@@ -11,7 +11,15 @@ final class XuiSyncConfig
         $pdo = Database::pdo();
         $row = $pdo->query('SELECT * FROM xui_sync_config WHERE id = 1')->fetch();
         if (!$row) {
-            $pdo->exec('INSERT INTO xui_sync_config (id, updated_at) VALUES (1, "")');
+            try {
+                if (Database::isPgsql()) {
+                    $pdo->exec("INSERT INTO xui_sync_config (id, updated_at) VALUES (1, '') ON CONFLICT (id) DO NOTHING");
+                } else {
+                    $pdo->exec("INSERT INTO xui_sync_config (id, updated_at) VALUES (1, '')");
+                }
+            } catch (Throwable $e) {
+                // Outra execução pode ter criado a linha 1 no intervalo.
+            }
             $row = $pdo->query('SELECT * FROM xui_sync_config WHERE id = 1')->fetch();
         }
         return $row ?: [];
