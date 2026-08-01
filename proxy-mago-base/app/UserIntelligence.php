@@ -219,14 +219,14 @@ final class UserIntelligence
     public static function totalsFresh(): array
     {
         $pdo = Database::pdo();
-        $metrics = RestreamRuntime::latestMetrics([
-            'connections_active',
-            'fetch_active',
-            'users_active',
-        ]);
-        $video = (int) ($metrics['connections_active'] ?? 0);
-        $fetch = (int) ($metrics['fetch_active'] ?? 0);
-        $onlineUsers = (int) ($metrics['users_active'] ?? 0);
+        // Antes vinha de `latestMetrics` (rollup). Se o JobRunner atrasa — e o
+        // painel real já mostrou `match_sessions atrasado 1698s` — os cards
+        // exibem 0 conexão com gente assistindo. Contagem AO VIVO lê a fonte
+        // primária (`cdn_sessions`), que o próprio request quente escreve.
+        $live = self::liveCounts();
+        $video = $live['connections_video'];
+        $fetch = $live['sessions_fetch'];
+        $onlineUsers = $live['users_online'];
         $totalUsers = (int) $pdo->query('SELECT COUNT(*) FROM xui_users_cache')->fetchColumn();
         $enabled = (int) $pdo->query('SELECT COUNT(*) FROM xui_users_cache WHERE enabled = 1')->fetchColumn();
         $slots = (int) $pdo->query('SELECT COALESCE(SUM(max_connections),0) FROM xui_users_cache WHERE enabled = 1')->fetchColumn();
@@ -246,8 +246,82 @@ final class UserIntelligence
             'slots_sold' => $slots,
             'slots_used_pct' => $slots > 0 ? (int) round($video * 100 / $slots) : 0,
             'over_limit' => $over,
+            'source' => 'cdn_sessions_live',
             'generated_at' => date('c'),
         ];
+    }
+
+    /**
+     * Contagem viva direto de `cdn_sessions`, sem depender de job/rollup.
+     *
+     * @return array{connections_video:int,sessions_fetch:int,users_online:int}
+     */
+    public static function liveCounts(): array
+    {
+        $now = time();
+        $where = CdnSession::activeWhereSql($now) . ' AND ' . CdnSession::publicClientWhereSql();
+        $row = Database::pdo()->query(
+            "SELECT
+                SUM(CASE WHEN session_kind NOT IN ('playlist','api') THEN 1 ELSE 0 END) AS video,
+                SUM(CASE WHEN session_kind IN ('playlist','api') THEN 1 ELSE 0 END) AS fetch_n,
+                COUNT(DISTINCT username) AS users
+              FROM cdn_sessions WHERE " . $where
+        )->fetch();
+
+        return [
+            'connections_video' => (int) ($row['video'] ?? 0),
+            'sessions_fetch' => (int) ($row['fetch_n'] ?? 0),
+            'users_online' => (int) ($row['users'] ?? 0),
+        ];
+    }
+
+    /** Segundos -> "1h 04m 12s", que é o que o operador lê no painel. */
+    public static function humanUptime(int $seconds): string
+    {
+        if ($seconds <= 0) { return '0s'; }
+        $h = intdiv($seconds, 3600);
+        $m = intdiv($seconds % 3600, 60);
+        $s = $seconds % 60;
+        if ($h > 0) { return sprintf('%dh %02dm %02ds', $h, $m, $s); }
+        if ($m > 0) { return sprintf('%dm %02ds', $m, $s); }
+        return $s . 's';
+    }
+
+    /**
+     * Conexões vivas de UM usuário, uma a uma, já resolvidas pela CDN:
+     * o que está vendo (canal/filme/série + nome), há quanto tempo, por onde sai.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public static function connections(string $username, int $limit = 100): array
+    {
+        $rows = CdnSession::live(['username' => $username], $limit);
+        // Filtro exato: `live()` usa LIKE, e "joao" não pode arrastar "joao2".
+        $rows = array_values(array_filter(
+            $rows,
+            static fn(array $r): bool => strcasecmp((string) ($r['username'] ?? ''), $username) === 0
+        ));
+        $rows = StreamCatalog::enrichSessions($rows);
+
+        $now = time();
+        foreach ($rows as &$r) {
+            $start = (int) ($r['uptime_start_epoch'] ?? 0);
+            if ($start <= 0) { $start = (int) ($r['started_epoch'] ?? 0); }
+            $uptime = $start > 0 ? max(0, $now - $start) : 0;
+            $r['uptime_seconds'] = $uptime;
+            $r['uptime_human'] = self::humanUptime($uptime);
+            $r['idle_seconds'] = max(0, $now - (int) ($r['last_seen_epoch'] ?? 0));
+            $r['is_video'] = in_array((string) ($r['session_kind'] ?? ''), ['playlist', 'api'], true) ? 0 : 1;
+            $r['exit_label'] = (string) ($r['lb_label'] ?? 'main');
+            $r['streaming'] = ((int) ($r['active_requests'] ?? 0) > 0) ? 1 : 0;
+        }
+        unset($r);
+
+        // Quem está transmitindo agora primeiro; depois por uptime maior.
+        usort($rows, static function (array $a, array $b): int {
+            return [$b['streaming'], $b['uptime_seconds']] <=> [$a['streaming'], $a['uptime_seconds']];
+        });
+        return $rows;
     }
 
     /** Detalhe de um usuário: plano + conexões abertas agora, uma a uma. */
@@ -258,9 +332,39 @@ final class UserIntelligence
         foreach ($rows as $r) {
             if (strcasecmp((string) $r['username'], $username) === 0) { $user = $r; break; }
         }
+        $connections = self::connections($username, 100);
+        $video = 0;
+        $fetch = 0;
+        $kinds = ['live' => 0, 'movie' => 0, 'series' => 0, 'other' => 0];
+        $ips = [];
+        foreach ($connections as $c) {
+            if ((int) $c['is_video'] === 1) {
+                $video++;
+                $k = (string) ($c['content_kind'] ?? 'other');
+                $kinds[$k] = ($kinds[$k] ?? 0) + 1;
+            } else {
+                $fetch++;
+            }
+            $ip = (string) ($c['client_ip'] ?? '');
+            if ($ip !== '') { $ips[$ip] = true; }
+        }
+        $limit = (int) ($user['max_connections'] ?? 0);
+
         return [
             'user' => $user,
-            'connections' => CdnSession::live(['username' => $username], 50),
+            'connections' => $connections,
+            'summary' => [
+                'limit' => $limit,
+                'in_use' => $video,
+                'free' => $limit > 0 ? max(0, $limit - $video) : 0,
+                'fetch' => $fetch,
+                'distinct_ips' => count($ips),
+                'by_kind' => $kinds,
+                'over_limit' => $limit > 0 && $video > $limit ? 1 : 0,
+            ],
+            'ip_lock' => UserIpLock::get($username),
+            'generated_at' => date('c'),
+            'server_epoch' => time(),
         ];
     }
 }
