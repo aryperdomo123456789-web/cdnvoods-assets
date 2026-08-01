@@ -141,8 +141,13 @@ final class StateStore
         return Config::get($key, $default);
     }
 
-    /** Marca o Redis como fora e devolve null para o chamador cair no sqlite. */
-    private static function demote(Throwable $e): null
+    /**
+     * Marca o Redis como fora e devolve null para o chamador cair no sqlite.
+     *
+     * Tipo de retorno é `mixed` de propósito: o tipo autônomo `null` só existe
+     * a partir do PHP 8.2 e a VPS de produção roda PHP 8.1.2 (parse fatal).
+     */
+    private static function demote(Throwable $e): mixed
     {
         self::$redisDown = true;
         self::$lastError = $e->getMessage();
