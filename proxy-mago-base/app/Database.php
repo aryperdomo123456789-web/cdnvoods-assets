@@ -612,6 +612,28 @@ final class Database
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_act_user ON xui_activity_now_cache(user_id)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_act_ip ON xui_activity_now_cache(user_ip)');
 
+        // Espelho de streams_series / streams_episodes: sem ele a CDN sabe o
+        // nome do episódio mas não sabe de QUAL série ele é, e a aba do usuário
+        // fica sem contexto ("o que essa conexão está vendo").
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS xui_series_cache (
+                series_id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT "",
+                category_id TEXT NOT NULL DEFAULT "",
+                synced_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS xui_episodes_cache (
+                stream_id INTEGER PRIMARY KEY,
+                series_id INTEGER NOT NULL DEFAULT 0,
+                season_num INTEGER NOT NULL DEFAULT 0,
+                episode_num INTEGER NOT NULL DEFAULT 0,
+                synced_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_ep_series ON xui_episodes_cache(series_id)');
+
         // Log estruturado por request público do proxy (sem senha em claro).
         $pdo->exec(
             'CREATE TABLE IF NOT EXISTS proxy_request_events (
