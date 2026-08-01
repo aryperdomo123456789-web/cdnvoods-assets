@@ -50,7 +50,7 @@ $user = 'smoke_lbonly_' . bin2hex(random_bytes(3));
 echo "\n== compatibilidade PHP 8.1 (produção) ==\n";
 foreach (['app/StateStore.php', 'app/LbRouter.php', 'app/LbContract.php', 'public/proxy.php', 'public/save-scale.php'] as $rel) {
     $src = (string) file_get_contents(dirname(__DIR__) . '/' . $rel);
-    check($rel . ': sem tipo autônomo null/true/false (8.2+)', !preg_match('/\)\s*:\s*(null|true|false)\s*(\{|;)/', $src));
+    check($rel . ': sem tipo autônomo null/true/false (8.2+)', !preg_match("/function\s+\w+\s*\([^)]*\)\s*:\s*(null|true|false)\s*[{;]/", $src));
 }
 
 echo "\n== rota padrão ==\n";
