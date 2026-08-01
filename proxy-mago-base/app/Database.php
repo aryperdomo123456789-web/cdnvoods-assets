@@ -340,6 +340,36 @@ final class Database
         return self::$columnCache[$key] = self::hasColumn(self::pdo(), $table, $column);
     }
 
+    /**
+     * A tabela existe no driver ativo? Usado pelas trilhas que rodam antes de
+     * a migração nova ter passado (deploy em duas etapas na VPS real).
+     */
+    public static function tableExists(string $table): bool
+    {
+        $key = '#table#' . strtolower($table);
+        if (array_key_exists($key, self::$columnCache)) {
+            return self::$columnCache[$key];
+        }
+        $pdo = self::pdo();
+        try {
+            if (self::isPgsql()) {
+                $stmt = $pdo->prepare(
+                    'SELECT 1 FROM information_schema.tables
+                      WHERE table_schema = current_schema() AND table_name = :t LIMIT 1'
+                );
+                $stmt->execute([':t' => strtolower($table)]);
+            } else {
+                $stmt = $pdo->prepare(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :t LIMIT 1"
+                );
+                $stmt->execute([':t' => $table]);
+            }
+            return self::$columnCache[$key] = (bool) $stmt->fetchColumn();
+        } catch (PDOException $e) {
+            return self::$columnCache[$key] = false;
+        }
+    }
+
     private static function addColumnIfMissing(PDO $pdo, string $table, string $column, string $decl): void
     {
         if (self::hasColumn($pdo, $table, $column)) {
