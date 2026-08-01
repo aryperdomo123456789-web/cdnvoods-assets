@@ -237,7 +237,9 @@ final class JobRunner
                 consecutive_failures=excluded.consecutive_failures,
                 circuit_open_until=excluded.circuit_open_until,
                 circuit_reason=excluded.circuit_reason,
-                max_duration_ms=GREATEST(job_state.max_duration_ms, excluded.max_duration_ms)",
+                max_duration_ms=' . (Database::isPgsql()
+                    ? 'GREATEST(job_state.max_duration_ms, excluded.max_duration_ms)'
+                    : 'CASE WHEN job_state.max_duration_ms > excluded.max_duration_ms THEN job_state.max_duration_ms ELSE excluded.max_duration_ms END') . '",
             [
                 ':n' => $jobName, ':p' => $purpose, ':i' => $interval,
                 ':la' => date('c'), ':le' => time(), ':st' => $status, ':d' => $duration,

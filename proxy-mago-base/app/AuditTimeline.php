@@ -73,7 +73,9 @@ final class AuditTimeline
                requests=cdn_audit_timeline.requests + 1,
                errors=cdn_audit_timeline.errors + excluded.errors,
                bytes=cdn_audit_timeline.bytes + excluded.bytes,
-               hops=GREATEST(cdn_audit_timeline.hops, excluded.hops),
+               hops=' . (Database::isPgsql()
+                   ? 'GREATEST(cdn_audit_timeline.hops, excluded.hops)'
+                   : 'CASE WHEN cdn_audit_timeline.hops > excluded.hops THEN cdn_audit_timeline.hops ELSE excluded.hops END') . ',
                last_epoch=excluded.last_epoch",
             [
                 ':k' => $sessionKey,

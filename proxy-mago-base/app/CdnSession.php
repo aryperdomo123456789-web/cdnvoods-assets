@@ -62,13 +62,22 @@ final class CdnSession
 
     public static function effectiveExpirySql(string $table = 'cdn_sessions'): string
     {
+        $movieIdle = Database::isPgsql()
+            ? 'GREATEST(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['movie'] . ')'
+            : '(CASE WHEN ' . $table . '.idle_timeout > ' . self::DIRECT_IDLE['movie'] . ' THEN ' . $table . '.idle_timeout ELSE ' . self::DIRECT_IDLE['movie'] . ' END)';
+        $seriesIdle = Database::isPgsql()
+            ? 'GREATEST(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['series'] . ')'
+            : '(CASE WHEN ' . $table . '.idle_timeout > ' . self::DIRECT_IDLE['series'] . ' THEN ' . $table . '.idle_timeout ELSE ' . self::DIRECT_IDLE['series'] . ' END)';
+        $otherIdle = Database::isPgsql()
+            ? 'GREATEST(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['other'] . ')'
+            : '(CASE WHEN ' . $table . '.idle_timeout > ' . self::DIRECT_IDLE['other'] . ' THEN ' . $table . '.idle_timeout ELSE ' . self::DIRECT_IDLE['other'] . ' END)';
         return '(CASE
             WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'movie\'
-                THEN ' . $table . '.last_seen_epoch + GREATEST(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['movie'] . ')
+                THEN ' . $table . '.last_seen_epoch + ' . $movieIdle . '
             WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'series\'
-                THEN ' . $table . '.last_seen_epoch + GREATEST(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['series'] . ')
+                THEN ' . $table . '.last_seen_epoch + ' . $seriesIdle . '
             WHEN ' . $table . '.direct_source = 1 AND ' . $table . '.session_kind = \'other\'
-                THEN ' . $table . '.last_seen_epoch + GREATEST(' . $table . '.idle_timeout, ' . self::DIRECT_IDLE['other'] . ')
+                THEN ' . $table . '.last_seen_epoch + ' . $otherIdle . '
             ELSE ' . $table . '.last_seen_epoch + ' . $table . '.idle_timeout
         END)';
     }
@@ -606,9 +615,12 @@ final class CdnSession
     private static function effectiveExpirySqlForSweep(string $table = 'cdn_sessions'): string
     {
         $internal = '(' . $table . '.client_ip IN (\'127.0.0.1\', \'::1\', \'\', \'-\'))';
+        $internalIdle = Database::isPgsql()
+            ? 'LEAST(' . $table . '.idle_timeout, 180)'
+            : '(CASE WHEN ' . $table . '.idle_timeout < 180 THEN ' . $table . '.idle_timeout ELSE 180 END)';
         return '(CASE
             WHEN ' . $internal . '
-                THEN ' . $table . '.last_seen_epoch + LEAST(' . $table . '.idle_timeout, 180)
+                THEN ' . $table . '.last_seen_epoch + ' . $internalIdle . '
             ELSE ' . self::effectiveExpirySql($table) . '
         END)';
     }
