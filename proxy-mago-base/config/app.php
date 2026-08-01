@@ -11,6 +11,15 @@ return [
     'db_user' => 'proxy_mago',
     'db_pass' => '',
     'db_sslmode' => 'prefer',
+    // FASE 2 — estado vivo (sessão, heartbeat, contador, trava por IP).
+    // 'sqlite' = comportamento atual; 'redis' = destino oficial da Fase 2.
+    // Pode ser trocado em settings (state_driver) sem deploy.
+    'state_driver' => 'sqlite',
+    'redis_host' => '127.0.0.1',
+    'redis_port' => 6379,
+    'redis_pass' => '',
+    'redis_db' => 0,
+    'redis_timeout' => 1.0,
     'nginx_conf_path' => '/etc/nginx/sites-available/proxy-mago.conf',
     'nginx_conf_link' => '/etc/nginx/sites-enabled/proxy-mago.conf',
     'php_fpm_socket' => '/run/php/php8.1-fpm.sock',

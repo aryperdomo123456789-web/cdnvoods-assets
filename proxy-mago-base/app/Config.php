@@ -22,6 +22,13 @@ final class Config
         'PROXY_MAGO_DB_USER'    => 'db_user',
         'PROXY_MAGO_DB_PASS'    => 'db_pass',
         'PROXY_MAGO_DB_SSLMODE' => 'db_sslmode',
+        // FASE 2 — permite ensaiar o corte de estado vivo para Redis sem
+        // tocar em storage/local.config.php (mesmo padrão do corte pgsql).
+        'PROXY_MAGO_STATE_DRIVER' => 'state_driver',
+        'PROXY_MAGO_REDIS_HOST'   => 'redis_host',
+        'PROXY_MAGO_REDIS_PORT'   => 'redis_port',
+        'PROXY_MAGO_REDIS_PASS'   => 'redis_pass',
+        'PROXY_MAGO_REDIS_DB'     => 'redis_db',
     ];
 
     public static function all(): array
@@ -47,7 +54,7 @@ final class Config
             if ($value === false || $value === '') {
                 continue;
             }
-            $env[$key] = $key === 'db_port' ? (int) $value : $value;
+            $env[$key] = in_array($key, ['db_port', 'redis_port', 'redis_db'], true) ? (int) $value : $value;
         }
 
         self::$base = array_replace($defaults, $override, $env);
