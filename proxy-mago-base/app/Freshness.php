@@ -23,7 +23,7 @@ final class Freshness
         'users'    => ['xui_sync_users', 'consolidate_runtime'],
         'sessions' => ['session_sweep', 'match_sessions'],
         'timeline' => ['match_sessions', 'consolidate_runtime'],
-        'summary'  => ['consolidate_runtime', 'metrics_rollup_light'],
+        'summary'  => ['consolidate_runtime'],
         'lb'       => ['lb_probe'],
         'nodes'    => ['lb_probe'],
         'routes'   => ['lb_rebalance', 'lb_autoroute'],

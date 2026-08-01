@@ -30,6 +30,7 @@ return [
     'nginx_conf_path' => '/etc/nginx/sites-available/proxy-mago.conf',
     'nginx_conf_link' => '/etc/nginx/sites-enabled/proxy-mago.conf',
     'php_fpm_socket' => '/run/php/php8.1-fpm.sock',
+    'php_fpm_control_socket' => '/run/php/php8.1-fpm-control.sock',
     'panel_path' => '/opt/proxy-mago/proxy-mago-base',
     'ssl_cert_path' => '/etc/ssl/cloudflare/cdnvoods.pem',
     'ssl_key_path' => '/etc/ssl/cloudflare/cdnvoods.key',
@@ -37,5 +38,9 @@ return [
     'allowed_user_agent' => '',
     'token_ttl' => 21600, // 6h por padrao
     'rate_limit_per_minute' => 240,
+    // Fallback cirúrgico: hosts finais de direct source que estão barrando o IP
+    // do músculo podem ser atendidos pelo cérebro temporariamente, sem expor o
+    // XUI ao cliente. CSV simples, ex.: "readyondemand.click,foo.bar".
+    'brain_direct_fallback_hosts' => '',
     'default_panel_domain' => '',
 ];

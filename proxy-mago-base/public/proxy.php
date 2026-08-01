@@ -34,6 +34,55 @@ function proxy_is_heavy_player_api(string $path, array $query): bool
     ], true);
 }
 
+/** @return string[] */
+function proxy_host_list(string $csv): array
+{
+    $out = [];
+    foreach (preg_split('/[\s,;]+/', strtolower(trim($csv))) ?: [] as $host) {
+        $host = trim($host);
+        if ($host !== '') {
+            $out[$host] = $host;
+        }
+    }
+    return array_values($out);
+}
+
+/**
+ * Alguns hosts de direct source barram o egress de um LB específico.
+ * Quando isso acontece, o cérebro pode assumir só esses requests para não
+ * derrubar a experiência do assinante enquanto o parque de músculos é ajustado.
+ *
+ * @return array{enabled:bool,host:string,mode:string}
+ */
+function proxy_direct_host_brain_fallback(?RequestContext $req): array
+{
+    if (!$req instanceof RequestContext) {
+        return ['enabled' => false, 'host' => '', 'mode' => ''];
+    }
+    if (!in_array($req->routeKind, ['movie', 'series'], true)) {
+        return ['enabled' => false, 'host' => '', 'mode' => ''];
+    }
+    $streamId = (int) ($req->streamId ?? 0);
+    if ($streamId <= 0) {
+        return ['enabled' => false, 'host' => '', 'mode' => ''];
+    }
+    $configured = proxy_host_list((string) Config::get('brain_direct_fallback_hosts', ''));
+    if ($configured === []) {
+        return ['enabled' => false, 'host' => '', 'mode' => ''];
+    }
+    $db = DirectCatalog::dbHostFor($streamId);
+    $host = strtolower(trim((string) ($db['host'] ?? '')));
+    if ((int) ($db['direct'] ?? 0) !== 1 || $host === '') {
+        return ['enabled' => false, 'host' => '', 'mode' => (string) ($db['mode'] ?? '')];
+    }
+    foreach ($configured as $candidate) {
+        if (DirectCatalog::sameHost($host, $candidate)) {
+            return ['enabled' => true, 'host' => $host, 'mode' => (string) ($db['mode'] ?? '')];
+        }
+    }
+    return ['enabled' => false, 'host' => $host, 'mode' => (string) ($db['mode'] ?? '')];
+}
+
 function proxy_fail(int $code, string $host = '', string $path = '/', string $reason = 'error'): void
 {
     global $REQ, $SESSION_KEY;
@@ -133,6 +182,35 @@ if ((string) Config::get('role', 'main') !== 'lb' && $REQ->username !== '') {
     }
 }
 
+$directFallback = ['enabled' => false, 'host' => '', 'mode' => ''];
+if ((string) Config::get('role', 'main') !== 'lb'
+    && (string) ($lbDecision['target'] ?? 'main') === 'lb') {
+    $directFallback = proxy_direct_host_brain_fallback($REQ);
+    if ($directFallback['enabled']) {
+        $lbDecision = [
+            'target' => 'main',
+            'lb_id' => 0,
+            'reason' => 'direct_host_brain_fallback',
+            'host' => '',
+            'mode' => 'brain_direct_fallback',
+        ];
+        Audit::log(
+            'direct_host_brain_fallback',
+            sprintf(
+                'request_id=%s user=%s stream_id=%d direct_host=%s mode=%s host=%s',
+                $REQ->requestId,
+                $REQ->username,
+                (int) ($REQ->streamId ?? 0),
+                $directFallback['host'],
+                $directFallback['mode'],
+                $host
+            ),
+            $clientIp,
+            $userAgent
+        );
+    }
+}
+
 // Sessão lógica da própria CDN: é ela que conta conexões, não o request.
 $SESSION_KEY = CdnSession::touch($REQ);
 StreamProxy::setSessionKey($SESSION_KEY);
@@ -155,6 +233,12 @@ if ((string) Config::get('role', 'main') !== 'lb'
         'type' => 'a',
         'host_header' => '',
         'extra_hosts' => '',
+        // O músculo precisa saber QUAL domínio/IP o cliente realmente usou.
+        // Sem isso ele reenfileira eventos no cérebro como se o host/IP
+        // públicos fossem os do próprio LB, quebrando a trilha canônica.
+        'forwarded_public_host' => $host,
+        'forwarded_client_ip' => $clientIp,
+        'forwarded_via_brain' => 1,
     ];
 }
 
@@ -167,7 +251,8 @@ if ((string) Config::get('role', 'main') !== 'lb'
 // ---------------------------------------------------------------------------
 if ((string) Config::get('role', 'main') !== 'lb'
     && (string) ($lbDecision['target'] ?? 'main') !== 'lb'
-    && LbRouter::requireDelivery()) {
+    && LbRouter::requireDelivery()
+    && !$directFallback['enabled']) {
     CdnSession::reject($SESSION_KEY, 'lb_required_no_muscle');
     Audit::log(
         'lb_required_no_muscle',
@@ -222,6 +307,27 @@ if (!headers_sent()) {
 
 try {
     if ($isTextual) {
+        if (PlayerApiLocal::shouldHandle($path, $query)) {
+            $reason = 'player_api_local_cache';
+            $result = PlayerApiLocal::serve($query);
+            $status = (int) ($result['status'] ?? 200);
+            $bytes = (int) ($result['bytes'] ?? 0);
+            AccessGuard::logAccess($host, $path, $status, $bytes, $tokenId, (int) $origin['id'], $reason);
+            RequestLog::close($REQ, $status, $bytes, $reason, '', '', 0);
+            CdnSession::record($SESSION_KEY, $status, $bytes, '');
+            AuditTimeline::record($REQ, $SESSION_KEY, $status, $bytes, [
+                'origin_id' => (int) $origin['id'],
+                'lb_id' => (int) $lbDecision['lb_id'],
+                'lb_target' => (string) $lbDecision['target'],
+                'lb_reason' => (string) $lbDecision['reason'],
+                'direct_host' => '',
+                'inconsistency' => '',
+                'hops' => 0,
+                'reason' => $reason,
+            ]);
+            return;
+        }
+
         if (proxy_is_heavy_player_api($path, $query)) {
             $status = 502;
             $bytes = 0;
@@ -248,9 +354,10 @@ try {
         }
 
         if (XuiSeriesCompat::shouldHandle($path, $query)) {
-            $rewriteHost = ((string) ($lbDecision['target'] ?? 'main') === 'lb' && (string) ($lbDecision['host'] ?? '') !== '')
-                ? (string) $lbDecision['host']
-                : $host;
+            // O host público visto pelo player deve continuar sendo o domínio
+            // protegido da CDN. O LB é só o destino interno da entrega, nunca
+            // a identidade pública devolvida em player_api/playlist.
+            $rewriteHost = $host;
             $buffered = StreamProxy::fetchBuffered($origin, $path, $query);
             $status = (int) ($buffered['status'] ?? 502);
             $body = XuiSeriesCompat::normalizeBody((string) ($buffered['body'] ?? ''));
@@ -281,9 +388,9 @@ try {
             return;
         }
 
-        $rewriteHost = ((string) ($lbDecision['target'] ?? 'main') === 'lb' && (string) ($lbDecision['host'] ?? '') !== '')
-            ? (string) $lbDecision['host']
-            : $host;
+        // Mantém o domínio protegido estável mesmo quando a entrega interna
+        // foi roteada para um músculo.
+        $rewriteHost = $host;
         $ctx = PlaylistRewriter::compile($origin, $rewriteHost, $token, $publicScheme);
         // Anti-embaralhamento: a resposta reescrita só pode conter o username
         // que entrou. Qualquer divergência aborta a entrega.

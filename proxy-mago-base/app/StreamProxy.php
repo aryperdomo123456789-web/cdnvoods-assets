@@ -137,6 +137,18 @@ final class StreamProxy
         if (!empty($origin['host_header']) && empty($origin['__off_origin'])) {
             $headers[] = 'Host: ' . $origin['host_header'];
         }
+        if (!empty($origin['forwarded_via_brain']) && empty($origin['__off_origin'])) {
+            $headers[] = 'X-Cdn-Brain-Proxy: 1';
+            if (!empty($origin['forwarded_public_host'])) {
+                $headers[] = 'X-Cdn-Original-Host: ' . (string) $origin['forwarded_public_host'];
+                $headers[] = 'X-Forwarded-Host: ' . (string) $origin['forwarded_public_host'];
+            }
+            if (!empty($origin['forwarded_client_ip'])) {
+                $headers[] = 'X-Cdn-Original-IP: ' . (string) $origin['forwarded_client_ip'];
+                $headers[] = 'X-Real-IP: ' . (string) $origin['forwarded_client_ip'];
+                $headers[] = 'X-Forwarded-For: ' . (string) $origin['forwarded_client_ip'];
+            }
+        }
         foreach ($extra as $h) {
             $headers[] = $h;
         }

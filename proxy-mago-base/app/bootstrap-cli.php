@@ -16,7 +16,7 @@ foreach ([
     'OriginRepository', 'AliasRepository', 'XuiOrigin', 'Tokens', 'AccessGuard',
     'RequestContext', 'RequestLog', 'CredentialGuard', 'CdnSession', 'AuditTimeline',
     'DirectSourceParser', 'DirectCatalog', 'DirectSource', 'DirectHostHealth', 'XuiSeriesCompat',
-    'Divergence', 'PlaylistRewriter',
+    'Divergence', 'PlaylistRewriter', 'PlayerApiLocal',
     'StreamProxy', 'HealthCheck', 'JobRunner', 'XuiSyncConfig', 'XuiReadOnly', 'XuiAdmin', 'UserIpLock',
     'XuiSyncService', 'RestreamRuntime', 'StreamCatalog', 'UserIntelligence',
     'LbCrypto', 'LbKeyring', 'LbSsh', 'LbNode', 'LbPackageBuilder', 'LbInstaller', 'LbTelemetry', 'LbRouter',

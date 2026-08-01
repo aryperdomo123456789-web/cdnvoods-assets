@@ -10,7 +10,7 @@ final class Database
      * migração em produção, concorrendo com requests ao vivo e causando
      * `database is locked`. O schema agora só muda quando esta constante muda.
      */
-    private const SCHEMA_VERSION = 20260737;
+    private const SCHEMA_VERSION = 20260801;
     private static ?PDO $pdo = null;
     private static bool $migrated = false;
     private static int $lockRetries = 0;
@@ -204,6 +204,12 @@ final class Database
     private static function ensureSchema(PDO $pdo): void
     {
         if (self::isPgsql()) {
+            if (self::$migrated) {
+                return;
+            }
+            if (!self::acquirePgsqlSchemaLock($pdo)) {
+                return;
+            }
             self::migratePgsqlHot($pdo);
             self::$migrated = true;
             return;
@@ -302,6 +308,17 @@ final class Database
     {
         @flock($fh, LOCK_UN);
         @fclose($fh);
+    }
+
+    private static function acquirePgsqlSchemaLock(PDO $pdo): bool
+    {
+        try {
+            $stmt = $pdo->query('SELECT pg_try_advisory_lock(20260736)');
+            return (bool) $stmt->fetchColumn();
+        } catch (Throwable $e) {
+            error_log('[db:schema-pgsql] advisory lock falhou: ' . $e->getMessage());
+            return false;
+        }
     }
 
     private static function hasColumn(PDO $pdo, string $table, string $column): bool
@@ -589,9 +606,15 @@ final class Database
                 stream_display_name TEXT NOT NULL DEFAULT "",
                 category_id TEXT NOT NULL DEFAULT "",
                 target_container TEXT NOT NULL DEFAULT "",
+                stream_icon TEXT NOT NULL DEFAULT "",
+                added_epoch INTEGER NOT NULL DEFAULT 0,
+                rating_text TEXT NOT NULL DEFAULT "",
+                movie_props_json TEXT NOT NULL DEFAULT "",
                 synced_at TEXT NOT NULL DEFAULT ""
             )'
         );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xsc_type ON xui_streams_cache(type)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xsc_type_cat ON xui_streams_cache(type, category_id)');
 
         $pdo->exec(
             'CREATE TABLE IF NOT EXISTS xui_activity_now_cache (
@@ -620,9 +643,23 @@ final class Database
                 series_id INTEGER PRIMARY KEY,
                 title TEXT NOT NULL DEFAULT "",
                 category_id TEXT NOT NULL DEFAULT "",
+                cover TEXT NOT NULL DEFAULT "",
+                cover_big TEXT NOT NULL DEFAULT "",
+                genre TEXT NOT NULL DEFAULT "",
+                plot TEXT NOT NULL DEFAULT "",
+                cast_text TEXT NOT NULL DEFAULT "",
+                rating_text TEXT NOT NULL DEFAULT "",
+                director TEXT NOT NULL DEFAULT "",
+                release_date TEXT NOT NULL DEFAULT "",
+                last_modified_epoch INTEGER NOT NULL DEFAULT 0,
+                tmdb_id TEXT NOT NULL DEFAULT "",
+                episode_run_time TEXT NOT NULL DEFAULT "",
+                backdrop_path TEXT NOT NULL DEFAULT "",
+                youtube_trailer TEXT NOT NULL DEFAULT "",
                 synced_at TEXT NOT NULL DEFAULT ""
             )'
         );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xseries_cat ON xui_series_cache(category_id)');
         $pdo->exec(
             'CREATE TABLE IF NOT EXISTS xui_episodes_cache (
                 stream_id INTEGER PRIMARY KEY,
@@ -829,9 +866,15 @@ final class Database
                 stream_display_name TEXT NOT NULL DEFAULT '',
                 category_id TEXT NOT NULL DEFAULT '',
                 target_container TEXT NOT NULL DEFAULT '',
+                stream_icon TEXT NOT NULL DEFAULT '',
+                added_epoch BIGINT NOT NULL DEFAULT 0,
+                rating_text TEXT NOT NULL DEFAULT '',
+                movie_props_json TEXT NOT NULL DEFAULT '',
                 synced_at TEXT NOT NULL DEFAULT ''
             )"
         );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xsc_type ON xui_streams_cache(type)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xsc_type_cat ON xui_streams_cache(type, category_id)');
 
         $pdo->exec(
             "CREATE TABLE IF NOT EXISTS xui_activity_now_cache (
@@ -856,9 +899,23 @@ final class Database
                 series_id BIGINT PRIMARY KEY,
                 title TEXT NOT NULL DEFAULT '',
                 category_id TEXT NOT NULL DEFAULT '',
+                cover TEXT NOT NULL DEFAULT '',
+                cover_big TEXT NOT NULL DEFAULT '',
+                genre TEXT NOT NULL DEFAULT '',
+                plot TEXT NOT NULL DEFAULT '',
+                cast_text TEXT NOT NULL DEFAULT '',
+                rating_text TEXT NOT NULL DEFAULT '',
+                director TEXT NOT NULL DEFAULT '',
+                release_date TEXT NOT NULL DEFAULT '',
+                last_modified_epoch BIGINT NOT NULL DEFAULT 0,
+                tmdb_id TEXT NOT NULL DEFAULT '',
+                episode_run_time TEXT NOT NULL DEFAULT '',
+                backdrop_path TEXT NOT NULL DEFAULT '',
+                youtube_trailer TEXT NOT NULL DEFAULT '',
                 synced_at TEXT NOT NULL DEFAULT ''
             )"
         );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xseries_cat ON xui_series_cache(category_id)');
         $pdo->exec(
             "CREATE TABLE IF NOT EXISTS xui_episodes_cache (
                 stream_id BIGINT PRIMARY KEY,
@@ -1165,6 +1222,7 @@ final class Database
         );
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_jsh_run ON job_step_history(run_id, seq)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_jsh_job ON job_step_history(job_name, ts_epoch)');
+        self::migrateDirectSource($pdo);
 
         // S2-P0-5 — drift de colunas encontrado no ENSAIO DE CORTE.
         //
@@ -1549,6 +1607,10 @@ final class Database
             'parse_status' => 'TEXT NOT NULL DEFAULT "pending"',
             'parse_error' => 'TEXT NOT NULL DEFAULT ""',
             'enriched_epoch' => 'INTEGER NOT NULL DEFAULT 0',
+            'stream_icon' => 'TEXT NOT NULL DEFAULT ""',
+            'added_epoch' => 'INTEGER NOT NULL DEFAULT 0',
+            'rating_text' => 'TEXT NOT NULL DEFAULT ""',
+            'movie_props_json' => 'TEXT NOT NULL DEFAULT ""',
         ] as $col => $decl) {
             self::addColumnIfMissing($pdo, 'xui_streams_cache', $col, $decl);
         }
@@ -1556,6 +1618,27 @@ final class Database
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xsc_host ON xui_streams_cache(direct_host_detected)');
         // Cobre o resumo direct source sem tocar na tabela (322k+ linhas).
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xsc_direct_parse ON xui_streams_cache(direct_source, parse_status)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xsc_type ON xui_streams_cache(type)');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xsc_type_cat ON xui_streams_cache(type, category_id)');
+
+        foreach ([
+            'cover' => 'TEXT NOT NULL DEFAULT ""',
+            'cover_big' => 'TEXT NOT NULL DEFAULT ""',
+            'genre' => 'TEXT NOT NULL DEFAULT ""',
+            'plot' => 'TEXT NOT NULL DEFAULT ""',
+            'cast_text' => 'TEXT NOT NULL DEFAULT ""',
+            'rating_text' => 'TEXT NOT NULL DEFAULT ""',
+            'director' => 'TEXT NOT NULL DEFAULT ""',
+            'release_date' => 'TEXT NOT NULL DEFAULT ""',
+            'last_modified_epoch' => 'INTEGER NOT NULL DEFAULT 0',
+            'tmdb_id' => 'TEXT NOT NULL DEFAULT ""',
+            'episode_run_time' => 'TEXT NOT NULL DEFAULT ""',
+            'backdrop_path' => 'TEXT NOT NULL DEFAULT ""',
+            'youtube_trailer' => 'TEXT NOT NULL DEFAULT ""',
+        ] as $col => $decl) {
+            self::addColumnIfMissing($pdo, 'xui_series_cache', $col, $decl);
+        }
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xseries_cat ON xui_series_cache(category_id)');
 
         // 2) Verdade consolidada por stream: DB + runtime + efetivo.
         $pdo->exec(
