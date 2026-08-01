@@ -166,6 +166,15 @@ bash bin/smoke-all.sh
    (`state_driver=redis`, observar `degraded` no painel por 24h).
 2. Corte real do banco frio para PostgreSQL (ensaio já fechado:
    `docs/S2_P0_5_ENSAIO_CORTE_POSTGRES_2026-07-31.md`).
-3. Motor Go no músculo consumindo ESTE contrato: `lb-go/`, com paridade
-   funcional obrigatória em playlist, HLS, direct source, trava de IP, limite,
-   sessão/uptime e envio de eventos.
+3. ~~Motor Go no músculo~~ — **feito**: `lb-go/` consome este contrato
+   (playlist, HLS, direct source, trava de IP com CIDR, limite de conexão,
+   sessão/uptime e envio de eventos em lote). Build: `bin/lb-go-build.sh`;
+   canário em 1 nó: `bin/lb-go-deploy.sh`. Ordem de produção em
+   `docs/CHECKLIST_FINAL_PRODUCAO_100_2026-08-01.md`.
+
+### Campos de origem no snapshot (v1.0)
+
+Além de `scheme/host/port/host_header`, o snapshot entrega `extra_hosts`,
+`base_path`, `auth_user` e `auth_pass`. O músculo precisa deles para **mascarar**
+o corpo (todo host da origem) e para falar com origem de conta única. Por isso o
+snapshot é servido SOMENTE com `X-LB-Token` válido e por canal privado/TLS.
