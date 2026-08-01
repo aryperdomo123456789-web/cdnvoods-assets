@@ -68,6 +68,7 @@ final class JobRunner
 
     private const HEAVY_PROFILE = [
         'xui_sync_streams',
+        'lb_autoroute',
         'direct_enrich',
         'direct_consolidate',
         'detect_inconsistency',
