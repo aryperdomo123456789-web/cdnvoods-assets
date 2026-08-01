@@ -27,9 +27,10 @@ type Handler struct {
 	MaxHops      int
 	Upstream     *http.Client
 	Logf         func(string, ...any)
+	trustedBrain map[string]struct{}
 }
 
-func New(c *contract.Client, st *state.Store, q *events.Queue, scheme string, maxHops int, timeout time.Duration) *Handler {
+func New(c *contract.Client, st *state.Store, q *events.Queue, scheme string, maxHops int, timeout time.Duration, brainBaseURL string) *Handler {
 	return &Handler{
 		Contract:     c,
 		State:        st,
@@ -47,7 +48,8 @@ func New(c *contract.Client, st *state.Store, q *events.Queue, scheme string, ma
 				IdleConnTimeout:       90 * time.Second,
 			},
 		},
-		Logf: func(string, ...any) {},
+		Logf:         func(string, ...any) {},
+		trustedBrain: trustedBrainAddrs(brainBaseURL),
 	}
 }
 
@@ -65,6 +67,64 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+func trustedBrainAddrs(rawURL string) map[string]struct{} {
+	out := map[string]struct{}{}
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Hostname() == "" {
+		return out
+	}
+	out[strings.ToLower(u.Hostname())] = struct{}{}
+	ips, err := net.LookupIP(u.Hostname())
+	if err != nil {
+		return out
+	}
+	for _, ip := range ips {
+		out[ip.String()] = struct{}{}
+	}
+	return out
+}
+
+func remoteIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return strings.TrimSpace(r.RemoteAddr)
+	}
+	return strings.TrimSpace(host)
+}
+
+func (h *Handler) trustedBrainRequest(r *http.Request) bool {
+	if strings.TrimSpace(r.Header.Get("X-Cdn-Brain-Proxy")) != "1" {
+		return false
+	}
+	ip := remoteIP(r)
+	if ip == "" {
+		return false
+	}
+	_, ok := h.trustedBrain[ip]
+	return ok
+}
+
+func (h *Handler) publicHost(r *http.Request) string {
+	if h.trustedBrainRequest(r) {
+		if v := strings.TrimSpace(r.Header.Get("X-Cdn-Original-Host")); v != "" {
+			return v
+		}
+		if v := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); v != "" {
+			return v
+		}
+	}
+	return r.Host
+}
+
+func (h *Handler) publicClientIP(r *http.Request) string {
+	if h.trustedBrainRequest(r) {
+		if v := strings.TrimSpace(r.Header.Get("X-Cdn-Original-IP")); v != "" {
+			return v
+		}
+	}
+	return clientIP(r)
 }
 
 // credentials aceita os dois formatos do XUI: query (get.php/player_api) e
@@ -118,8 +178,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	host := r.Host
-	ip := clientIP(r)
+	host := h.publicHost(r)
+	ip := h.publicClientIP(r)
 	ua := r.Header.Get("User-Agent")
 	username, password := credentials(r)
 	path := r.URL.Path

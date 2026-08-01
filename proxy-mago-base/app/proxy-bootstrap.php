@@ -42,6 +42,7 @@ require_once dirname(__DIR__) . '/app/DirectSource.php';
 require_once dirname(__DIR__) . '/app/XuiSeriesCompat.php';
 require_once dirname(__DIR__) . '/app/Divergence.php';
 require_once dirname(__DIR__) . '/app/PlaylistRewriter.php';
+require_once dirname(__DIR__) . '/app/PlayerApiLocal.php';
 require_once dirname(__DIR__) . '/app/StreamProxy.php';
 
 error_reporting(E_ALL);

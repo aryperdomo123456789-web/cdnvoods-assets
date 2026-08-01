@@ -2,6 +2,7 @@ storage/app.sqlite
 storage/app.sqlite-shm
 storage/app.sqlite-wal
 storage/app.db
+storage/local.config.php
 storage/logs/
 storage/cache/
 *.log

@@ -204,13 +204,16 @@ final class CdnSession
     }
 
     /** Abre (ou reaproveita) a sessão local deste request. Retorna a chave. */
-    public static function touch(RequestContext $ctx): string
+    public static function touch(RequestContext $ctx, ?string $forcedKey = null): string
     {
         if (!self::enabled() || ($ctx->username === '' && $ctx->fingerprint === '')) {
             return '';
         }
         $kind = self::kindOf($ctx);
-        $key = self::keyFor($ctx);
+        $key = trim((string) ($forcedKey ?? ''));
+        if ($key === '') {
+            $key = self::keyFor($ctx);
+        }
         $now = time();
         $streamId = (int) ($ctx->streamId ?? 0);
         $directDb = $streamId > 0 ? DirectCatalog::dbHostFor($streamId) : ['direct' => 0, 'host' => ''];

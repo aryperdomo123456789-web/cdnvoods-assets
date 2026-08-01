@@ -212,6 +212,9 @@ final class JobRunner
             $openReason = substr($error !== '' ? $error : 'falhas consecutivas', 0, 200);
         }
 
+        $maxDurationExpr = Database::isPgsql()
+            ? 'GREATEST(job_state.max_duration_ms, excluded.max_duration_ms)'
+            : 'CASE WHEN job_state.max_duration_ms > excluded.max_duration_ms THEN job_state.max_duration_ms ELSE excluded.max_duration_ms END';
         Database::run(
             "INSERT INTO job_state (job_name, purpose, interval_seconds, last_run_at, last_run_epoch,
                 last_status, last_duration_ms, last_processed, last_failed, last_error, next_run_epoch,
@@ -239,9 +242,7 @@ final class JobRunner
                 consecutive_failures=excluded.consecutive_failures,
                 circuit_open_until=excluded.circuit_open_until,
                 circuit_reason=excluded.circuit_reason,
-                max_duration_ms=' . (Database::isPgsql()
-                    ? 'GREATEST(job_state.max_duration_ms, excluded.max_duration_ms)'
-                    : 'CASE WHEN job_state.max_duration_ms > excluded.max_duration_ms THEN job_state.max_duration_ms ELSE excluded.max_duration_ms END') . '",
+                max_duration_ms=$maxDurationExpr",
             [
                 ':n' => $jobName, ':p' => $purpose, ':i' => $interval,
                 ':la' => date('c'), ':le' => time(), ':st' => $status, ':d' => $duration,
