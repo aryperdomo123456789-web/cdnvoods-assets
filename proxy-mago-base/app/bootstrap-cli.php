@@ -18,7 +18,7 @@ foreach ([
     'DirectSourceParser', 'DirectCatalog', 'DirectSource', 'DirectHostHealth', 'XuiSeriesCompat',
     'Divergence', 'PlaylistRewriter',
     'StreamProxy', 'HealthCheck', 'JobRunner', 'XuiSyncConfig', 'XuiReadOnly', 'XuiAdmin', 'UserIpLock',
-    'XuiSyncService', 'RestreamRuntime', 'UserIntelligence',
+    'XuiSyncService', 'RestreamRuntime', 'StreamCatalog', 'UserIntelligence',
     'LbCrypto', 'LbKeyring', 'LbSsh', 'LbNode', 'LbPackageBuilder', 'LbInstaller', 'LbTelemetry', 'LbRouter',
 ] as $class) {
     require_once $root . '/app/' . $class . '.php';
