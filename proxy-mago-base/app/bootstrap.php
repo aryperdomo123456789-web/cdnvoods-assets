@@ -43,6 +43,7 @@ require_once dirname(__DIR__) . '/app/XuiAdmin.php';
 require_once dirname(__DIR__) . '/app/UserIpLock.php';
 require_once dirname(__DIR__) . '/app/XuiSyncService.php';
 require_once dirname(__DIR__) . '/app/RestreamRuntime.php';
+require_once dirname(__DIR__) . '/app/StreamCatalog.php';
 require_once dirname(__DIR__) . '/app/UserIntelligence.php';
 require_once dirname(__DIR__) . '/app/LbCrypto.php';
 require_once dirname(__DIR__) . '/app/LbKeyring.php';

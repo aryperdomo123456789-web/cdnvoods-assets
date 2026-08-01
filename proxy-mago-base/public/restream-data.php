@@ -101,6 +101,13 @@ try {
                 'kpis' => RestreamRuntime::kpis(),
             ];
             break;
+        // Aba própria de um assinante: cada conexão viva, o que ela está vendo
+        // (canal/filme/série resolvido pela CDN) e há quanto tempo está online.
+        case 'user_connections':
+            $u = trim((string) ($_GET['username'] ?? $filters['username']));
+            if ($u === '') { throw new InvalidArgumentException('username é obrigatório'); }
+            $out = UserIntelligence::detail($u);
+            break;
         case 'users':
             $limit = max(10, min(200, $limit));
             $out = [

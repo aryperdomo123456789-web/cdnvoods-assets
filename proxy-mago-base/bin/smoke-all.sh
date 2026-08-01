@@ -25,6 +25,7 @@ SUITES=(
   smoke-ip-lock.sh
   smoke-limit.sh
   smoke-uptime.sh
+  smoke-user-telemetry.sh
   smoke-direct-health.sh
   smoke-statestore.sh
   smoke-lb-only.sh

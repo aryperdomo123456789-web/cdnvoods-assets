@@ -34,6 +34,7 @@ final class JobRunner
         'xui_sync_activity' => ['Espelha user_activity_now do XUI (sessões ativas)', 5],
         'xui_sync_users'    => ['Espelha users do XUI (limites, validade, flags)', 60],
         'xui_sync_streams'  => ['Espelha streams do XUI (nome/tipo/container)', 300],
+        'xui_sync_series'   => ['Espelha streams_series/streams_episodes (série · S/E do episódio)', 900],
         'direct_enrich'     => ['Parseia stream_source do XUI e detecta host de direct source', 300],
         // Em produção real com ~480k streams, esse job pode levar dezenas de
         // segundos. Rodar a cada 30s trava o SQLite e faz o painel perder
@@ -68,6 +69,7 @@ final class JobRunner
 
     private const HEAVY_PROFILE = [
         'xui_sync_streams',
+        'xui_sync_series',
         'lb_autoroute',
         'direct_enrich',
         'direct_consolidate',

@@ -57,6 +57,8 @@ function job_callable(string $name): callable
             return function (array &$s) { XuiSyncService::syncUsers($s); XuiSyncConfig::markSync('ok'); };
         case 'xui_sync_streams':
             return function (array &$s) { XuiSyncService::syncStreams($s); XuiSyncConfig::markSync('ok'); };
+        case 'xui_sync_series':
+            return function (array &$s) { XuiSyncService::syncSeries($s); XuiSyncConfig::markSync('ok'); };
         case 'xui_sync_activity':
             return function (array &$s) { XuiSyncService::syncActivity($s); XuiSyncConfig::markSync('ok'); };
         case 'direct_enrich':

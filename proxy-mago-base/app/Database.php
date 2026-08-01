@@ -10,7 +10,7 @@ final class Database
      * migração em produção, concorrendo com requests ao vivo e causando
      * `database is locked`. O schema agora só muda quando esta constante muda.
      */
-    private const SCHEMA_VERSION = 20260736;
+    private const SCHEMA_VERSION = 20260737;
     private static ?PDO $pdo = null;
     private static bool $migrated = false;
     private static int $lockRetries = 0;
@@ -340,6 +340,36 @@ final class Database
         return self::$columnCache[$key] = self::hasColumn(self::pdo(), $table, $column);
     }
 
+    /**
+     * A tabela existe no driver ativo? Usado pelas trilhas que rodam antes de
+     * a migração nova ter passado (deploy em duas etapas na VPS real).
+     */
+    public static function tableExists(string $table): bool
+    {
+        $key = '#table#' . strtolower($table);
+        if (array_key_exists($key, self::$columnCache)) {
+            return self::$columnCache[$key];
+        }
+        $pdo = self::pdo();
+        try {
+            if (self::isPgsql()) {
+                $stmt = $pdo->prepare(
+                    'SELECT 1 FROM information_schema.tables
+                      WHERE table_schema = current_schema() AND table_name = :t LIMIT 1'
+                );
+                $stmt->execute([':t' => strtolower($table)]);
+            } else {
+                $stmt = $pdo->prepare(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :t LIMIT 1"
+                );
+                $stmt->execute([':t' => $table]);
+            }
+            return self::$columnCache[$key] = (bool) $stmt->fetchColumn();
+        } catch (PDOException $e) {
+            return self::$columnCache[$key] = false;
+        }
+    }
+
     private static function addColumnIfMissing(PDO $pdo, string $table, string $column, string $decl): void
     {
         if (self::hasColumn($pdo, $table, $column)) {
@@ -582,6 +612,28 @@ final class Database
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_act_user ON xui_activity_now_cache(user_id)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_act_ip ON xui_activity_now_cache(user_ip)');
 
+        // Espelho de streams_series / streams_episodes: sem ele a CDN sabe o
+        // nome do episódio mas não sabe de QUAL série ele é, e a aba do usuário
+        // fica sem contexto ("o que essa conexão está vendo").
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS xui_series_cache (
+                series_id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT "",
+                category_id TEXT NOT NULL DEFAULT "",
+                synced_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS xui_episodes_cache (
+                stream_id INTEGER PRIMARY KEY,
+                series_id INTEGER NOT NULL DEFAULT 0,
+                season_num INTEGER NOT NULL DEFAULT 0,
+                episode_num INTEGER NOT NULL DEFAULT 0,
+                synced_at TEXT NOT NULL DEFAULT ""
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_ep_series ON xui_episodes_cache(series_id)');
+
         // Log estruturado por request público do proxy (sem senha em claro).
         $pdo->exec(
             'CREATE TABLE IF NOT EXISTS proxy_request_events (
@@ -798,6 +850,25 @@ final class Database
             )"
         );
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_act_user ON xui_activity_now_cache(user_id)');
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS xui_series_cache (
+                series_id BIGINT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                category_id TEXT NOT NULL DEFAULT '',
+                synced_at TEXT NOT NULL DEFAULT ''
+            )"
+        );
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS xui_episodes_cache (
+                stream_id BIGINT PRIMARY KEY,
+                series_id BIGINT NOT NULL DEFAULT 0,
+                season_num INTEGER NOT NULL DEFAULT 0,
+                episode_num INTEGER NOT NULL DEFAULT 0,
+                synced_at TEXT NOT NULL DEFAULT ''
+            )"
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_ep_series ON xui_episodes_cache(series_id)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_act_ip ON xui_activity_now_cache(user_ip)');
 
         $pdo->exec(

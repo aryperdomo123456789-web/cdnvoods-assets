@@ -80,28 +80,21 @@ function bytes_fmt($b): string {
     </section>
 
     <section class="card full">
-        <h2>Sessões locais da CDN</h2>
-        <p class="muted">Conexões reais contadas pela própria CDN (requests agrupados por sessão lógica).</p>
+        <h2>Conexões ao vivo <span class="muted" id="live-age">agora</span></h2>
+        <p class="muted">
+            Cada linha é UMA conexão real contada pela própria CDN, antes do XUI:
+            o que está vendo (canal, filme ou série), há quanto tempo está online e por onde sai.
+            Atualiza sozinho a cada 2s, sem recarregar a página.
+        </p>
+        <p id="live-summary" class="muted">carregando…</p>
         <table>
-            <thead><tr><th>Tipo</th><th>IP</th><th>Player</th><th>Stream</th><th>Início</th><th>Reqs</th><th>Bytes</th><th>Direct</th><th>Match</th></tr></thead>
-            <tbody>
-            <?php if (!$d['cdn_sessions']): ?><tr><td colspan="9" class="muted">nenhuma sessão local ativa</td></tr><?php endif; ?>
-            <?php foreach ($d['cdn_sessions'] as $s): ?>
-                <tr>
-                    <td><?php echo h($s['session_kind']); ?></td>
-                    <td><?php echo h($s['client_ip']); ?></td>
-                    <td class="muted"><?php echo h(substr((string) $s['user_agent'], 0, 40)); ?></td>
-                    <td><?php echo h($s['stream_id'] ?: '-'); ?></td>
-                    <td class="muted"><?php echo h(substr((string) $s['started_at'], 0, 19)); ?></td>
-                    <td><?php echo (int) $s['requests']; ?></td>
-                    <td><?php echo bytes_fmt($s['bytes']); ?></td>
-                    <td><?php echo (int) $s['direct_source'] ? '<span class="tag warn">' . h($s['direct_host'] ?: 'sim') . '</span>' : '-'; ?></td>
-                    <td><span class="tag <?php echo $s['match_confidence'] === 'high' ? 'ok' : ($s['match_confidence'] === 'low' ? 'bad' : 'warn'); ?>"><?php echo h($s['match_confidence']); ?></span>
-                        <span class="muted"><?php echo h($s['match_reason']); ?></span></td>
-                </tr>
-            <?php endforeach; ?>
-            </tbody>
+            <thead><tr>
+                <th>Vendo agora</th><th>Tipo</th><th>Uptime</th><th>IP final</th><th>App</th>
+                <th>Saída</th><th>Entrega</th><th>Reqs</th><th>Bytes</th><th>Estado</th>
+            </tr></thead>
+            <tbody id="live-rows"><tr><td colspan="10" class="muted">carregando…</td></tr></tbody>
         </table>
+        <p class="muted" id="live-iplock"></p>
     </section>
 
     <?php if ($d['open_divergences']): ?>
@@ -241,5 +234,118 @@ function bytes_fmt($b): string {
     </section>
 <?php endif; ?>
 </main>
+<?php if ($d): ?>
+<script>
+(function () {
+    var username = <?php echo json_encode($username, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?>;
+    var rowsEl = document.getElementById('live-rows');
+    var sumEl = document.getElementById('live-summary');
+    var ageEl = document.getElementById('live-age');
+    var lockEl = document.getElementById('live-iplock');
+    var timer = null;
+    var lastOk = 0;
+
+    function esc(v) {
+        return String(v === null || v === undefined ? '' : v)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    function bytes(b) {
+        b = Number(b) || 0;
+        var u = ['B', 'KB', 'MB', 'GB', 'TB'], i = 0;
+        while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+        return (i ? b.toFixed(1) : Math.round(b)) + u[i];
+    }
+    function uptime(s) {
+        s = Math.max(0, Number(s) || 0);
+        var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), q = s % 60;
+        if (h > 0) { return h + 'h ' + String(m).padStart(2, '0') + 'm ' + String(q).padStart(2, '0') + 's'; }
+        if (m > 0) { return m + 'm ' + String(q).padStart(2, '0') + 's'; }
+        return q + 's';
+    }
+    var KIND = { live: 'canal', movie: 'filme', series: 'série', other: '?' };
+
+    function render(d) {
+        var conns = d.connections || [];
+        var s = d.summary || {};
+        var kinds = s.by_kind || {};
+        sumEl.innerHTML =
+            'Em uso: <strong>' + (s.in_use || 0) + '</strong>' +
+            ' / limite <strong>' + (s.limit || 0) + '</strong>' +
+            ' · livres <strong>' + (s.free || 0) + '</strong>' +
+            ' · canal ' + (kinds.live || 0) + ' · filme ' + (kinds.movie || 0) + ' · série ' + (kinds.series || 0) +
+            ' · buscas de lista ' + (s.fetch || 0) +
+            ' · IPs distintos ' + (s.distinct_ips || 0) +
+            (s.over_limit ? ' · <span class="tag bad">acima do limite</span>' : '');
+
+        var lock = d.ip_lock || {};
+        var allowed = (lock.allowed_ips || '').trim();
+        lockEl.innerHTML = allowed
+            ? 'Trava de IP ativa para este usuário: <strong>' + esc(allowed) + '</strong> (aceita IP exato, faixa CIDR e curinga).'
+            : 'Sem trava de IP para este usuário — defina o IP personalizado dele na aba do XUI.';
+
+        if (!conns.length) {
+            rowsEl.innerHTML = '<tr><td colspan="10" class="muted">nenhuma conexão ativa agora</td></tr>';
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < conns.length; i++) {
+            var c = conns[i];
+            var kind = c.content_kind || 'other';
+            var tagCls = kind === 'live' ? 'info' : (kind === 'movie' ? 'ok' : (kind === 'series' ? 'warn' : ''));
+            var name = c.content_label || ('stream #' + (c.stream_id || 0));
+            var stateCls = c.streaming ? 'ok' : 'warn';
+            var state = c.streaming ? 'transmitindo' : ('parado ' + uptime(c.idle_seconds));
+            html += '<tr>' +
+                '<td>' + esc(name) +
+                    (c.content_source === 'route' ? ' <span class="muted">(pela rota)</span>' : '') +
+                    (c.content_source === 'unknown' ? ' <span class="muted">(fora do espelho)</span>' : '') + '</td>' +
+                '<td><span class="tag ' + tagCls + '">' + esc(KIND[kind] || kind) + '</span> ' +
+                    '<span class="muted">' + esc(c.session_kind || '') + '</span></td>' +
+                '<td>' + esc(uptime(c.uptime_seconds)) + '</td>' +
+                '<td>' + esc(c.client_ip || '-') + '</td>' +
+                '<td class="muted">' + esc(String(c.user_agent || '').slice(0, 38)) + '</td>' +
+                '<td>' + esc(c.exit_label || 'main') + '</td>' +
+                '<td>' + (Number(c.effective_direct_source) === 1
+                    ? '<span class="tag warn">direct: ' + esc(c.direct_host_effective || c.direct_host || 'sim') + '</span>'
+                    : '<span class="muted">' + esc(c.delivery_mode || 'restream') + '</span>') + '</td>' +
+                '<td>' + (Number(c.requests) || 0) + '</td>' +
+                '<td>' + bytes(c.bytes) + '</td>' +
+                '<td><span class="tag ' + stateCls + '">' + esc(state) + '</span></td>' +
+            '</tr>';
+        }
+        rowsEl.innerHTML = html;
+    }
+
+    function tick() {
+        fetch('/restream-data.php?view=user_connections&username=' + encodeURIComponent(username), {
+            headers: { 'Accept': 'application/json' }, credentials: 'same-origin'
+        }).then(function (r) {
+            if (r.status === 401 || r.status === 403) { throw new Error('sessão expirada'); }
+            return r.json();
+        }).then(function (j) {
+            if (j && j.error) { throw new Error(j.error); }
+            lastOk = Date.now();
+            ageOk();
+            render(j);
+        }).catch(function (e) {
+            ageEl.textContent = '(falha ao atualizar: ' + e.message + ')';
+        });
+    }
+    function ageOk() {
+        var s = Math.round((Date.now() - lastOk) / 1000);
+        ageEl.textContent = lastOk ? '(atualizado há ' + s + 's)' : 'agora';
+    }
+
+    tick();
+    timer = setInterval(tick, 2000);
+    setInterval(ageOk, 1000);
+    // Aba escondida não gasta banco: o painel real fica aberto o dia inteiro.
+    document.addEventListener('visibilitychange', function () {
+        if (document.hidden) { clearInterval(timer); timer = null; }
+        else if (!timer) { tick(); timer = setInterval(tick, 2000); }
+    });
+})();
+</script>
+<?php endif; ?>
 </body>
 </html>
