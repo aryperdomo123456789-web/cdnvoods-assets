@@ -157,6 +157,86 @@ final class XuiSyncService
 
     public static function syncActivity(array &$stats): void
     {
+        // (mantido abaixo) — o espelho de séries entra antes por ordem lógica.
+        self::syncActivityInner($stats);
+    }
+
+    /**
+     * Espelha streams_series + streams_episodes.
+     *
+     * Volume real: milhares de séries e centenas de milhares de episódios. Vai
+     * em transações por lote com streaming de cursor (XuiReadOnly::each) para
+     * manter RAM constante, igual ao syncStreams.
+     */
+    public static function syncSeries(array &$stats): void
+    {
+        $pdo = Database::pdo();
+        if (!Database::tableExists('xui_series_cache') || !Database::tableExists('xui_episodes_cache')) {
+            $stats['details']['skipped'] = 'schema antigo (rode as migrações)';
+            return;
+        }
+        $now = date('c');
+        $batchSize = 2000;
+
+        $seriesStmt = $pdo->prepare(
+            'INSERT INTO xui_series_cache (series_id, title, category_id, synced_at)
+             VALUES (:id,:t,:c,:sy)
+             ON CONFLICT(series_id) DO UPDATE SET title=excluded.title,
+               category_id=excluded.category_id, synced_at=excluded.synced_at'
+        );
+        $episodeStmt = $pdo->prepare(
+            'INSERT INTO xui_episodes_cache (stream_id, series_id, season_num, episode_num, synced_at)
+             VALUES (:sid,:se,:sn,:en,:sy)
+             ON CONFLICT(stream_id) DO UPDATE SET series_id=excluded.series_id,
+               season_num=excluded.season_num, episode_num=excluded.episode_num,
+               synced_at=excluded.synced_at'
+        );
+
+        $series = 0;
+        $episodes = 0;
+        $inTx = false;
+        $n = 0;
+        try {
+            foreach (XuiReadOnly::each('SELECT id, title, category_id FROM streams_series') as $r) {
+                if (!$inTx) { $pdo->beginTransaction(); $inTx = true; }
+                $seriesStmt->execute([
+                    ':id' => (int) $r['id'],
+                    ':t' => substr((string) ($r['title'] ?? ''), 0, 200),
+                    ':c' => substr((string) ($r['category_id'] ?? ''), 0, 100),
+                    ':sy' => $now,
+                ]);
+                $series++; $stats['processed']++; $n++;
+                if (($n % $batchSize) === 0) { $pdo->commit(); $inTx = false; }
+            }
+            if ($inTx) { $pdo->commit(); $inTx = false; }
+
+            $n = 0;
+            foreach (XuiReadOnly::each(
+                'SELECT stream_id, series_id, season_num, episode_num FROM streams_episodes'
+            ) as $r) {
+                if (!$inTx) { $pdo->beginTransaction(); $inTx = true; }
+                $episodeStmt->execute([
+                    ':sid' => (int) $r['stream_id'],
+                    ':se' => (int) ($r['series_id'] ?? 0),
+                    ':sn' => (int) ($r['season_num'] ?? 0),
+                    ':en' => (int) ($r['episode_num'] ?? 0),
+                    ':sy' => $now,
+                ]);
+                $episodes++; $stats['processed']++; $n++;
+                if (($n % $batchSize) === 0) { $pdo->commit(); $inTx = false; }
+            }
+            if ($inTx) { $pdo->commit(); $inTx = false; }
+        } catch (Throwable $e) {
+            if ($inTx && $pdo->inTransaction()) { $pdo->rollBack(); }
+            throw $e;
+        }
+
+        $stats['details']['series'] = $series;
+        $stats['details']['episodes'] = $episodes;
+    }
+
+    private static function syncActivityInner(array &$stats): void
+    {
         $table = self::activityTable();
         $rows = XuiReadOnly::select(
             'SELECT activity_id, user_id, stream_id, server_id, user_agent, user_ip, container,
