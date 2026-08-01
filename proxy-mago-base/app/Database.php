@@ -10,7 +10,7 @@ final class Database
      * migração em produção, concorrendo com requests ao vivo e causando
      * `database is locked`. O schema agora só muda quando esta constante muda.
      */
-    private const SCHEMA_VERSION = 20260736;
+    private const SCHEMA_VERSION = 20260737;
     private static ?PDO $pdo = null;
     private static bool $migrated = false;
     private static int $lockRetries = 0;
