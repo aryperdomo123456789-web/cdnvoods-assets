@@ -54,6 +54,7 @@ try {
         'repair_retry' => fn (array &$s) => RestreamRuntime::repair($s),
         'lb_probe' => fn (array &$s) => LbTelemetry::probeAll($s),
         'lb_rebalance' => fn (array &$s) => LbRouter::rebalance($s),
+        'lb_autoroute' => fn (array &$s) => LbRouter::autoroute($s),
         'lb_cleanup' => fn (array &$s) => LbTelemetry::cleanup($s),
     };
 

@@ -51,6 +51,7 @@ final class JobRunner
         'repair_retry'      => ['Reprocessa matching de requests que falharam', 300],
         'lb_probe'          => ['Coleta CPU/RAM/banda dos LBs por SSH e atualiza saúde', 30],
         'lb_rebalance'      => ['Reavalia usuários em modo auto e escolhe o melhor LB', 60],
+        'lb_autoroute'      => ['Cria rota de LB para usuários novos usando o modo padrão', 120],
         'lb_cleanup'        => ['Limpa métricas antigas dos LBs', 3600],
     ];
 
