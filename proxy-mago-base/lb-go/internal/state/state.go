@@ -259,18 +259,6 @@ func (s *Store) SessionExists(sessionKey string) (bool, bool) {
 	return n == 1, true
 }
 
-func (s *Store) sessionCloseLegacy(sessionKey, identity string) error {
-	if sessionKey == "" {
-		return nil
-	}
-	cmds := [][]string{{"DEL", NS + "sess:" + sessionKey}}
-	if identity != "" {
-		cmds = append(cmds, []string{"SREM", NS + "user:" + identity, sessionKey})
-	}
-	_, err := s.do(cmds...)
-	return err
-}
-
 // UserCount conta sessões vivas do usuário e PODA o índice na leitura — é o que
 // permite o limite de conexão sem varredura, igual StateStore::userSessions().
 func (s *Store) UserCount(identity string) (int, error) {
