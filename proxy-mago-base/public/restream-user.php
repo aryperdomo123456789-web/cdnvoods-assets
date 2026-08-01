@@ -80,28 +80,21 @@ function bytes_fmt($b): string {
     </section>
 
     <section class="card full">
-        <h2>Sessões locais da CDN</h2>
-        <p class="muted">Conexões reais contadas pela própria CDN (requests agrupados por sessão lógica).</p>
+        <h2>Conexões ao vivo <span class="muted" id="live-age">agora</span></h2>
+        <p class="muted">
+            Cada linha é UMA conexão real contada pela própria CDN, antes do XUI:
+            o que está vendo (canal, filme ou série), há quanto tempo está online e por onde sai.
+            Atualiza sozinho a cada 2s, sem recarregar a página.
+        </p>
+        <p id="live-summary" class="muted">carregando…</p>
         <table>
-            <thead><tr><th>Tipo</th><th>IP</th><th>Player</th><th>Stream</th><th>Início</th><th>Reqs</th><th>Bytes</th><th>Direct</th><th>Match</th></tr></thead>
-            <tbody>
-            <?php if (!$d['cdn_sessions']): ?><tr><td colspan="9" class="muted">nenhuma sessão local ativa</td></tr><?php endif; ?>
-            <?php foreach ($d['cdn_sessions'] as $s): ?>
-                <tr>
-                    <td><?php echo h($s['session_kind']); ?></td>
-                    <td><?php echo h($s['client_ip']); ?></td>
-                    <td class="muted"><?php echo h(substr((string) $s['user_agent'], 0, 40)); ?></td>
-                    <td><?php echo h($s['stream_id'] ?: '-'); ?></td>
-                    <td class="muted"><?php echo h(substr((string) $s['started_at'], 0, 19)); ?></td>
-                    <td><?php echo (int) $s['requests']; ?></td>
-                    <td><?php echo bytes_fmt($s['bytes']); ?></td>
-                    <td><?php echo (int) $s['direct_source'] ? '<span class="tag warn">' . h($s['direct_host'] ?: 'sim') . '</span>' : '-'; ?></td>
-                    <td><span class="tag <?php echo $s['match_confidence'] === 'high' ? 'ok' : ($s['match_confidence'] === 'low' ? 'bad' : 'warn'); ?>"><?php echo h($s['match_confidence']); ?></span>
-                        <span class="muted"><?php echo h($s['match_reason']); ?></span></td>
-                </tr>
-            <?php endforeach; ?>
-            </tbody>
+            <thead><tr>
+                <th>Vendo agora</th><th>Tipo</th><th>Uptime</th><th>IP final</th><th>App</th>
+                <th>Saída</th><th>Entrega</th><th>Reqs</th><th>Bytes</th><th>Estado</th>
+            </tr></thead>
+            <tbody id="live-rows"><tr><td colspan="10" class="muted">carregando…</td></tr></tbody>
         </table>
+        <p class="muted" id="live-iplock"></p>
     </section>
 
     <?php if ($d['open_divergences']): ?>
