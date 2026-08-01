@@ -850,6 +850,25 @@ final class Database
             )"
         );
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_act_user ON xui_activity_now_cache(user_id)');
+
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS xui_series_cache (
+                series_id BIGINT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                category_id TEXT NOT NULL DEFAULT '',
+                synced_at TEXT NOT NULL DEFAULT ''
+            )"
+        );
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS xui_episodes_cache (
+                stream_id BIGINT PRIMARY KEY,
+                series_id BIGINT NOT NULL DEFAULT 0,
+                season_num INTEGER NOT NULL DEFAULT 0,
+                episode_num INTEGER NOT NULL DEFAULT 0,
+                synced_at TEXT NOT NULL DEFAULT ''
+            )"
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_ep_series ON xui_episodes_cache(series_id)');
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_xui_act_ip ON xui_activity_now_cache(user_ip)');
 
         $pdo->exec(
