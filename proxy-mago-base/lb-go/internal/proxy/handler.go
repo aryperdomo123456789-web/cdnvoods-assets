@@ -169,13 +169,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if rt.EnforceConnectionLimit && user.MaxConnections > 0 && isLive(path) {
 			// Estado vivo fora do ar NÃO derruba player: sem contador confiável
 			// o limite é liberado e a degradação aparece em /healthz.
-			if n, err := h.State.UserCount(strings.ToLower(username)); err == nil && n >= user.MaxConnections {
-				if _, exists := h.State.UserCount(strings.ToLower(username)); exists == nil && n > user.MaxConnections {
+			n, err := h.State.UserCount(strings.ToLower(username))
+			if err == nil && n >= user.MaxConnections {
+				// A própria sessão deste cliente já conta: só recusa quando o
+				// excedente vem de OUTRA sessão viva.
+				if _, self := h.State.SessionExists(key); !self || n > user.MaxConnections {
 					reject(http.StatusTooManyRequests, "limite_de_conexoes")
 					return
 				}
-				reject(http.StatusTooManyRequests, "limite_de_conexoes")
-				return
 			}
 		}
 	}
