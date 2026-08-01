@@ -105,7 +105,7 @@ check('por tipo: 1 canal, 1 filme, 1 série',
 check('não marcado acima do limite', (int) $s['over_limit'] === 0);
 
 echo "\n== 4. totais do painel são vivos (sem depender de rollup atrasado)\n";
-$pdo->exec('DELETE FROM proxy_metrics');
+$pdo->exec('DELETE FROM cdn_metrics');
 Cache::flush();
 $t = UserIntelligence::totalsFresh();
 check('fonte é cdn_sessions ao vivo', ($t['source'] ?? '') === 'cdn_sessions_live');
