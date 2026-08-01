@@ -117,10 +117,10 @@ UserIpLock::save($user, '203.0.113.10, 198.51.100.0/24', 'smoke');
 Cache::flush();
 $d2 = UserIntelligence::detail($user);
 check('detalhe expõe a trava do usuário', str_contains((string) ($d2['ip_lock']['allowed_ips'] ?? ''), '203.0.113.10'));
-check('IP travado permitido', UserIpLock::allows($user, '203.0.113.10'));
-check('faixa CIDR permitida', UserIpLock::allows($user, '198.51.100.77'));
-check('IP fora da regra bloqueado', !UserIpLock::allows($user, '45.33.1.2'));
-check('outro usuário não herda a trava', UserIpLock::allows('smoke_tel_outro', '45.33.1.2'));
+check('IP travado permitido', UserIpLock::matches($user, '203.0.113.10'));
+check('faixa CIDR permitida', UserIpLock::matches($user, '198.51.100.77'));
+check('IP fora da regra bloqueado', !UserIpLock::matches($user, '45.33.1.2'));
+check('outro usuário não herda a trava', UserIpLock::matches('smoke_tel_outro', '45.33.1.2'));
 
 $clean();
 $pdo->prepare('DELETE FROM cdn_user_ip_lock WHERE username = :u')->execute([':u' => $user]);
