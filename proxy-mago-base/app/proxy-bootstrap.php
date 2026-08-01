@@ -21,6 +21,10 @@ require_once dirname(__DIR__) . '/app/Audit.php';
 require_once dirname(__DIR__) . '/app/OriginRepository.php';
 require_once dirname(__DIR__) . '/app/AliasRepository.php';
 require_once dirname(__DIR__) . '/app/Cache.php';
+// Estado vivo (Fase 2): entra ANTES de CdnSession porque o caminho quente
+// consulta contador/sessão por aqui quando state_driver=redis.
+require_once dirname(__DIR__) . '/app/RedisClient.php';
+require_once dirname(__DIR__) . '/app/StateStore.php';
 
 require_once dirname(__DIR__) . '/app/Tokens.php';
 require_once dirname(__DIR__) . '/app/AccessGuard.php';
