@@ -28,6 +28,7 @@ SUITES=(
   smoke-direct-health.sh
   smoke-statestore.sh
   smoke-lb-only.sh
+  smoke-lb-go.sh
   smoke-portability.sh
   smoke-pg-cut.sh
 )
