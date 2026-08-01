@@ -108,6 +108,19 @@ try {
             if ($u === '') { throw new InvalidArgumentException('username é obrigatório'); }
             $out = UserIntelligence::detail($u);
             break;
+        // Trilha viva global: uma linha por conexão real, com canal/filme/série
+        // já resolvido pela CDN (é o coração do painel ao vivo).
+        case 'live_connections':
+            $out = UserIntelligence::liveConnections([
+                'username' => $filters['username'],
+                'ip' => $filters['ip'],
+                'kind' => trim((string) ($_GET['content'] ?? '')),
+                'only_streaming' => !empty($_GET['streaming']),
+                'direct' => $filters['direct'],
+                'include_fetch' => !empty($_GET['include_fetch']),
+            ], max(20, min(500, $limit)));
+            $out['users_totals'] = UserIntelligence::totals();
+            break;
         case 'users':
             $limit = max(10, min(200, $limit));
             $out = [

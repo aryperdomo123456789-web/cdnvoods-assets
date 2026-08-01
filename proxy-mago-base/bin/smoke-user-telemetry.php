@@ -122,6 +122,31 @@ check('faixa CIDR permitida', UserIpLock::matches($user, '198.51.100.77'));
 check('IP fora da regra bloqueado', !UserIpLock::matches($user, '45.33.1.2'));
 check('outro usuário não herda a trava', UserIpLock::matches('smoke_tel_outro', '45.33.1.2'));
 
+echo "\n== 6. trilha viva global do painel (uma linha por conexão)\n";
+Cache::flush();
+$live = UserIntelligence::liveConnections(['username' => $user], 200);
+$lrows = $live['rows'];
+$lt = $live['totals'];
+check('painel ao vivo lista as 3 conexões', count($lrows) === 3, (string) count($lrows));
+check('totais separam canal/filme/série',
+    (int) $lt['live'] === 1 && (int) $lt['movie'] === 1 && (int) $lt['series'] === 1,
+    json_encode([$lt['live'], $lt['movie'], $lt['series']]));
+check('total de conexões vivas = 3', (int) $lt['connections'] === 3, (string) $lt['connections']);
+check('conta assinantes e IPs distintos', (int) $lt['users'] >= 1 && (int) $lt['ips'] === 2, (string) $lt['ips']);
+$first = $lrows[0];
+check('cada linha diz o estado ao vivo', in_array((string) $first['live_state'], ['transmitindo', 'pausado', 'encerrando'], true), (string) $first['live_state']);
+check('cada linha diz o modo de entrega', in_array((string) $first['delivery_effective'], ['restream', 'direct_source', 'direct_proxy', 'unknown'], true), (string) $first['delivery_effective']);
+check('cada linha traz uptime humano', (string) ($first['uptime_human'] ?? '') !== '');
+$onlyLive = UserIntelligence::liveConnections(['username' => $user, 'kind' => 'live'], 200);
+check('filtro por canais devolve só canal',
+    count($onlyLive['rows']) === 1 && (string) $onlyLive['rows'][0]['content_kind'] === 'live',
+    (string) count($onlyLive['rows']));
+$onlySeries = UserIntelligence::liveConnections(['username' => $user, 'kind' => 'series'], 200);
+check('filtro por séries devolve só série', count($onlySeries['rows']) === 1);
+check('totais do filtro seguem sendo do parque inteiro', (int) $onlyLive['totals']['connections'] === 3);
+$directOnly = UserIntelligence::liveConnections(['username' => $user, 'direct' => true], 200);
+check('filtro direct não inventa direct source', count($directOnly['rows']) === 0, (string) count($directOnly['rows']));
+
 $clean();
 $pdo->prepare('DELETE FROM cdn_user_ip_lock WHERE username = :u')->execute([':u' => $user]);
 $restore();
