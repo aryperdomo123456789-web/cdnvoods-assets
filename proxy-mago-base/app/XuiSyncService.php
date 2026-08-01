@@ -92,6 +92,7 @@ final class XuiSyncService
             // Este XUI guarda a verdade do direct source no próprio catálogo:
             // `direct_source` (flag) e `stream_source` (URL/JSON externo já pronto).
             'SELECT id, type, stream_display_name, category_id, target_container,
+                    stream_icon, added, rating, movie_properties,
                     direct_source, direct_proxy, stream_source
                FROM streams'
         );
@@ -103,11 +104,16 @@ final class XuiSyncService
             $stmt = $pdo->prepare(
                 "INSERT INTO xui_streams_cache
                    (stream_id, type, stream_display_name, category_id, target_container,
+                    stream_icon, added_epoch, rating_text, movie_props_json,
                     direct_source, direct_proxy, stream_source_raw, parse_status, synced_at)
-                 VALUES (:id,:t,:n,:c,:tc,:ds,:dp,:src,'pending',:sy)
+                 VALUES (:id,:t,:n,:c,:tc,:ico,:ad,:ra,:mp,:ds,:dp,:src,'pending',:sy)
                  ON CONFLICT(stream_id) DO UPDATE SET type=excluded.type,
                    stream_display_name=excluded.stream_display_name, category_id=excluded.category_id,
                    target_container=excluded.target_container,
+                   stream_icon=excluded.stream_icon,
+                   added_epoch=excluded.added_epoch,
+                   rating_text=excluded.rating_text,
+                   movie_props_json=excluded.movie_props_json,
                    direct_source=excluded.direct_source, direct_proxy=excluded.direct_proxy,
                    stream_source_raw=excluded.stream_source_raw,
                    parse_status=CASE WHEN xui_streams_cache.stream_source_raw = excluded.stream_source_raw
@@ -126,6 +132,10 @@ final class XuiSyncService
                     ':n' => substr((string) ($r['stream_display_name'] ?? ''), 0, 200),
                     ':c' => substr((string) ($r['category_id'] ?? ''), 0, 100),
                     ':tc' => substr((string) ($r['target_container'] ?? ''), 0, 60),
+                    ':ico' => substr((string) ($r['stream_icon'] ?? ''), 0, 500),
+                    ':ad' => (int) ($r['added'] ?? 0),
+                    ':ra' => substr((string) ($r['rating'] ?? ''), 0, 20),
+                    ':mp' => substr((string) ($r['movie_properties'] ?? ''), 0, 12000),
                     ':ds' => (int) ($r['direct_source'] ?? 0),
                     ':dp' => (int) ($r['direct_proxy'] ?? 0),
                     // Guardamos mascarado: nunca user:pass da origem em claro no painel.
@@ -179,10 +189,18 @@ final class XuiSyncService
         $batchSize = 2000;
 
         $seriesStmt = $pdo->prepare(
-            'INSERT INTO xui_series_cache (series_id, title, category_id, synced_at)
-             VALUES (:id,:t,:c,:sy)
+            'INSERT INTO xui_series_cache
+                (series_id, title, category_id, cover, cover_big, genre, plot, cast_text, rating_text,
+                 director, release_date, last_modified_epoch, tmdb_id, episode_run_time,
+                 backdrop_path, youtube_trailer, synced_at)
+             VALUES (:id,:t,:c,:co,:cb,:g,:p,:ca,:ra,:d,:rd,:lm,:tm,:er,:bp,:yt,:sy)
              ON CONFLICT(series_id) DO UPDATE SET title=excluded.title,
-               category_id=excluded.category_id, synced_at=excluded.synced_at'
+               category_id=excluded.category_id, cover=excluded.cover, cover_big=excluded.cover_big,
+               genre=excluded.genre, plot=excluded.plot, cast_text=excluded.cast_text, rating_text=excluded.rating_text,
+               director=excluded.director, release_date=excluded.release_date,
+               last_modified_epoch=excluded.last_modified_epoch, tmdb_id=excluded.tmdb_id,
+               episode_run_time=excluded.episode_run_time, backdrop_path=excluded.backdrop_path,
+               youtube_trailer=excluded.youtube_trailer, synced_at=excluded.synced_at'
         );
         $episodeStmt = $pdo->prepare(
             'INSERT INTO xui_episodes_cache (stream_id, series_id, season_num, episode_num, synced_at)
@@ -197,12 +215,30 @@ final class XuiSyncService
         $inTx = false;
         $n = 0;
         try {
-            foreach (XuiReadOnly::each('SELECT id, title, category_id FROM streams_series') as $r) {
+            foreach (XuiReadOnly::each(
+                'SELECT id, title, category_id, cover, cover_big, genre, plot, cast, rating,
+                        director, release_date, last_modified, tmdb_id, episode_run_time,
+                        backdrop_path, youtube_trailer
+                   FROM streams_series'
+            ) as $r) {
                 if (!$inTx) { $pdo->beginTransaction(); $inTx = true; }
                 $seriesStmt->execute([
                     ':id' => (int) $r['id'],
                     ':t' => substr((string) ($r['title'] ?? ''), 0, 200),
                     ':c' => substr((string) ($r['category_id'] ?? ''), 0, 100),
+                    ':co' => substr((string) ($r['cover'] ?? ''), 0, 500),
+                    ':cb' => substr((string) ($r['cover_big'] ?? ''), 0, 500),
+                    ':g' => substr((string) ($r['genre'] ?? ''), 0, 200),
+                    ':p' => substr((string) ($r['plot'] ?? ''), 0, 4000),
+                    ':ca' => substr((string) ($r['cast'] ?? ''), 0, 1000),
+                    ':ra' => substr((string) ($r['rating'] ?? ''), 0, 20),
+                    ':d' => substr((string) ($r['director'] ?? ''), 0, 300),
+                    ':rd' => substr((string) ($r['release_date'] ?? ''), 0, 40),
+                    ':lm' => (int) ($r['last_modified'] ?? 0),
+                    ':tm' => substr((string) ($r['tmdb_id'] ?? ''), 0, 40),
+                    ':er' => substr((string) ($r['episode_run_time'] ?? ''), 0, 40),
+                    ':bp' => substr((string) ($r['backdrop_path'] ?? ''), 0, 4000),
+                    ':yt' => substr((string) ($r['youtube_trailer'] ?? ''), 0, 120),
                     ':sy' => $now,
                 ]);
                 $series++; $stats['processed']++; $n++;

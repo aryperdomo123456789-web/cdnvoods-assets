@@ -283,7 +283,8 @@ final class LbContract
         switch ($type) {
             case 'session_open':
             case 'session_touch':
-                $key = CdnSession::touch($ctx);
+                $eventKey = trim((string) ($event['session_key'] ?? ''));
+                $key = CdnSession::touch($ctx, $eventKey !== '' ? $eventKey : null);
                 if ($key !== '' && $lbId > 0) {
                     CdnSession::tagLb($key, $lbId);
                 }

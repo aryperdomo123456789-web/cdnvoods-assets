@@ -20,6 +20,7 @@ final class NginxGenerator
         $panelDomain = trim((string) ($settings['panel_domain'] ?? ''));
         $secret = trim((string) ($settings['app_secret'] ?? ''));
         $phpFpmSocket = (string) ($settings['php_fpm_socket'] ?? Config::get('php_fpm_socket'));
+        $phpFpmControlSocket = (string) ($settings['php_fpm_control_socket'] ?? Config::get('php_fpm_control_socket', $phpFpmSocket));
         $panelPath = rtrim((string) ($settings['panel_path'] ?? Config::get('panel_path')), '/');
         $sslCertPath = (string) ($settings['ssl_cert_path'] ?? Config::get('ssl_cert_path'));
         $sslKeyPath = (string) ($settings['ssl_key_path'] ?? Config::get('ssl_key_path'));
@@ -58,10 +59,10 @@ final class NginxGenerator
             if ($sslEnabled) {
                 $blocks[] = $forceHttps
                     ? self::panelRedirect($panelDomain)
-                    : self::panelServer(80, false, $panelDomain, $panelPath, $phpFpmSocket, $secret, '', '');
-                $blocks[] = self::panelServer(443, true, $panelDomain, $panelPath, $phpFpmSocket, $secret, $sslCertPath, $sslKeyPath);
+                    : self::panelServer(80, false, $panelDomain, $panelPath, $phpFpmControlSocket, $secret, '', '');
+                $blocks[] = self::panelServer(443, true, $panelDomain, $panelPath, $phpFpmControlSocket, $secret, $sslCertPath, $sslKeyPath);
             } else {
-                $blocks[] = self::panelServer(80, false, $panelDomain, $panelPath, $phpFpmSocket, $secret, '', '');
+                $blocks[] = self::panelServer(80, false, $panelDomain, $panelPath, $phpFpmControlSocket, $secret, '', '');
             }
         }
 
