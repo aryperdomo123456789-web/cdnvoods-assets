@@ -20,6 +20,13 @@ return [
     'redis_pass' => '',
     'redis_db' => 0,
     'redis_timeout' => 1.0,
+    // FASE 2 — cérebro puro. Com 1, o main NÃO entrega conteúdo do XUI:
+    // se o usuário não tiver músculo (LB) apto, o request é recusado em vez de
+    // derrubar o cérebro. Só liga isso depois de ter LB instalado e saudável.
+    'lb_require_delivery' => 0,
+    // Modo aplicado a usuário que ainda não tem linha em lb_user_routes.
+    // 'main_only' = comportamento histórico; 'auto' = todo mundo vai pro LB.
+    'lb_default_mode' => 'main_only',
     'nginx_conf_path' => '/etc/nginx/sites-available/proxy-mago.conf',
     'nginx_conf_link' => '/etc/nginx/sites-enabled/proxy-mago.conf',
     'php_fpm_socket' => '/run/php/php8.1-fpm.sock',
