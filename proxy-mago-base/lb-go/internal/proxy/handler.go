@@ -173,7 +173,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if err == nil && n >= user.MaxConnections {
 				// A própria sessão deste cliente já conta: só recusa quando o
 				// excedente vem de OUTRA sessão viva.
-				if _, self := h.State.SessionExists(key); !self || n > user.MaxConnections {
+				self, reliable := h.State.SessionExists(key)
+				if reliable && (!self || n > user.MaxConnections) {
 					reject(http.StatusTooManyRequests, "limite_de_conexoes")
 					return
 				}
