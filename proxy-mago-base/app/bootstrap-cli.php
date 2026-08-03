@@ -14,6 +14,7 @@ $root = dirname(__DIR__);
 foreach ([
     'Config', 'Sql', 'Cache', 'Freshness', 'RedisClient', 'StateStore', 'Database', 'DbLockDiag', 'SettingsRepository', 'Audit', 'NginxGenerator',
     'OriginRepository', 'AliasRepository', 'XuiOrigin', 'Tokens', 'AccessGuard',
+    'TotpAuth',
     'RequestContext', 'RequestLog', 'CredentialGuard', 'CdnSession', 'AuditTimeline',
     'DirectSourceParser', 'DirectCatalog', 'DirectSource', 'DirectHostHealth', 'XuiSeriesCompat',
     'Divergence', 'PlaylistRewriter', 'PlayerApiLocal',

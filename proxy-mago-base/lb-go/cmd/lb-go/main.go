@@ -52,7 +52,11 @@ func main() {
 		return
 	}
 
-	h := proxy.New(cc, st, q, cfg.PublicScheme, cfg.MaxHops, cfg.UpstreamTimeout, cfg.BrainBaseURL)
+	h := proxy.New(
+		cc, st, q,
+		cfg.PublicScheme, cfg.MaxHops, cfg.UpstreamTimeout,
+		cfg.BrainBaseURL, cfg.LBToken, cfg.BrainDirectFetchHosts,
+	)
 	h.Logf = logf
 
 	go cc.Loop(cfg.SnapshotInterval, logf)

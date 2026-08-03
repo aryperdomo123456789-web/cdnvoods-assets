@@ -218,5 +218,5 @@ try {
 } catch (Throwable $e) {
     http_response_code(500);
     error_log('[restream-data] ' . $e->getMessage());
-    echo json_encode(['error' => 'falha ao consultar restreamento', 'detail' => $e->getMessage()]);
+    echo json_encode(['error' => 'falha ao consultar restreamento']);
 }

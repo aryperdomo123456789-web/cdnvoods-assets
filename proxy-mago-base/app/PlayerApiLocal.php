@@ -8,7 +8,24 @@ final class PlayerApiLocal
             return false;
         }
         $action = strtolower(trim((string) ($query['action'] ?? '')));
-        return in_array($action, ['get_vod_streams', 'get_series'], true);
+        if (!in_array($action, ['get_vod_streams', 'get_series'], true)) {
+            return false;
+        }
+
+        // Se o cache local ainda não estiver populado, é melhor preservar a
+        // fluidez usando a origem do XUI do que servir uma tela vazia.
+        try {
+            if ($action === 'get_vod_streams') {
+                return self::countRows('xui_streams_cache', "type = '2'") > 0;
+            }
+            if ($action === 'get_series') {
+                return self::countRows('xui_series_cache', '1=1') > 0;
+            }
+        } catch (Throwable $e) {
+            error_log('[player-api-local] cache check falhou: ' . $e->getMessage());
+        }
+
+        return false;
     }
 
     /**
@@ -191,5 +208,11 @@ final class PlayerApiLocal
             return 0.0;
         }
         return round(min(5.0, $n / 2.0), 1);
+    }
+
+    private static function countRows(string $table, string $where): int
+    {
+        $sql = 'SELECT COUNT(*) FROM ' . $table . ' WHERE ' . $where;
+        return (int) Database::pdo()->query($sql)->fetchColumn();
     }
 }

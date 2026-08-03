@@ -47,6 +47,7 @@ $xuiPort   = (int) ($xui['port'] ?? 80);
         <a href="/auditoria.php">Auditoria</a>
         <a href="/restream.php">Restreamento ao vivo</a>
         <a href="/xui.php">XUI</a>
+        <a href="/usuario.php">Usuário</a>
         <a href="/jobs.php">Jobs</a>
         <a href="/lb.php">LB</a>
         <a href="/avancado.php">Avançado</a>

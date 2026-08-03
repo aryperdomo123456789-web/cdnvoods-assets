@@ -31,10 +31,13 @@ return [
     'nginx_conf_link' => '/etc/nginx/sites-enabled/proxy-mago.conf',
     'php_fpm_socket' => '/run/php/php8.1-fpm.sock',
     'php_fpm_control_socket' => '/run/php/php8.1-fpm-control.sock',
+    // Migração HTTP para Go: quando preenchido, o Nginx tenta o upstream Go
+    // primeiro e mantém o PHP como fallback durante a transição.
+    'public_go_upstream' => 'http://127.0.0.1:8081',
     'panel_path' => '/opt/proxy-mago/proxy-mago-base',
     'ssl_cert_path' => '/etc/ssl/cloudflare/cdnvoods.pem',
     'ssl_key_path' => '/etc/ssl/cloudflare/cdnvoods.key',
-    'force_https' => false, // nunca forçar HTTPS: domínios públicos de clientes rodam em http puro
+    'force_https' => true, // painel administrativo deve preferir HTTPS sempre que houver certificado
     'allowed_user_agent' => '',
     'token_ttl' => 21600, // 6h por padrao
     'rate_limit_per_minute' => 240,
@@ -43,4 +46,6 @@ return [
     // XUI ao cliente. CSV simples, ex.: "readyondemand.click,foo.bar".
     'brain_direct_fallback_hosts' => '',
     'default_panel_domain' => '',
+    'admin_2fa_enabled' => 0,
+    'admin_2fa_secret' => '',
 ];

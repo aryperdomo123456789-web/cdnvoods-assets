@@ -25,6 +25,7 @@ type Config struct {
 	RedisDB   int
 
 	PublicScheme string // esquema das URLs reescritas na playlist
+	BrainDirectFetchHosts string
 
 	SnapshotInterval  time.Duration
 	EventFlushEvery   time.Duration
@@ -58,10 +59,11 @@ func Load() (Config, error) {
 		RedisPass:         env("LB_REDIS_PASS", ""),
 		RedisDB:           envInt("LB_REDIS_DB", 0),
 		PublicScheme:      env("LB_PUBLIC_SCHEME", "http"),
+		BrainDirectFetchHosts: env("LB_BRAIN_DIRECT_FETCH_HOSTS", ""),
 		SnapshotInterval:  time.Duration(envInt("LB_SNAPSHOT_SECONDS", 30)) * time.Second,
 		EventFlushEvery:   time.Duration(envInt("LB_EVENT_FLUSH_SECONDS", 5)) * time.Second,
 		HeartbeatInterval: time.Duration(envInt("LB_HEARTBEAT_SECONDS", 30)) * time.Second,
-		UpstreamTimeout:   time.Duration(envInt("LB_UPSTREAM_TIMEOUT_SECONDS", 20)) * time.Second,
+		UpstreamTimeout:   time.Duration(envInt("LB_UPSTREAM_TIMEOUT_SECONDS", 45)) * time.Second,
 		MaxHops:           envInt("LB_MAX_HOPS", 12),
 	}
 

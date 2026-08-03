@@ -21,6 +21,7 @@ final class NginxGenerator
         $secret = trim((string) ($settings['app_secret'] ?? ''));
         $phpFpmSocket = (string) ($settings['php_fpm_socket'] ?? Config::get('php_fpm_socket'));
         $phpFpmControlSocket = (string) ($settings['php_fpm_control_socket'] ?? Config::get('php_fpm_control_socket', $phpFpmSocket));
+        $publicGoUpstream = trim((string) ($settings['public_go_upstream'] ?? Config::get('public_go_upstream', '')));
         $panelPath = rtrim((string) ($settings['panel_path'] ?? Config::get('panel_path')), '/');
         $sslCertPath = (string) ($settings['ssl_cert_path'] ?? Config::get('ssl_cert_path'));
         $sslKeyPath = (string) ($settings['ssl_key_path'] ?? Config::get('ssl_key_path'));
@@ -49,9 +50,9 @@ final class NginxGenerator
         $blocks = [];
 
         // ---------- PÚBLICO (aliases dos clientes) ----------
-        $blocks[] = self::publicServer(80, false, $panelPath, $phpFpmSocket, $secret, '', '');
+        $blocks[] = self::publicServer(80, false, $panelPath, $phpFpmSocket, $publicGoUpstream, $secret, '', '');
         if ($sslEnabled) {
-            $blocks[] = self::publicServer(443, true, $panelPath, $phpFpmSocket, $secret, $sslCertPath, $sslKeyPath);
+            $blocks[] = self::publicServer(443, true, $panelPath, $phpFpmSocket, $publicGoUpstream, $secret, $sslCertPath, $sslKeyPath);
         }
 
         // ---------- PAINEL ----------
@@ -69,7 +70,7 @@ final class NginxGenerator
         $body = implode("\n", $blocks);
 
         return <<<NGINX
-# Gerado pelo painel Proxy Mago (VPS 45.140.192.237 / Ubuntu 22.04).
+# Gerado pelo painel Proxy Mago.
 # NUNCA expõe host, IP ou credenciais da origem XUI: todo o proxy acontece
 # dentro do PHP (public/proxy.php), que lê a origem protegida do SQLite.
 #
@@ -97,6 +98,7 @@ NGINX;
         bool $https,
         string $panelPath,
         string $phpFpmSocket,
+        string $publicGoUpstream,
         string $secret,
         string $cert,
         string $key
@@ -106,52 +108,64 @@ NGINX;
             : "    listen {$port} default_server;";
         $ssl = self::sslBlock($https, $cert, $key);
         $httpsParam = $https ? "        fastcgi_param HTTPS on;\n" : '';
-
-        return <<<NGINX
-server {
-{$listen}
-    server_name _;
-
-{$ssl}    root {$panelPath}/public;
-
-    # Query strings XUI carregam username/password: nunca persistir em disco.
-    access_log off;
-    error_log  {$panelPath}/storage/logs/error.log warn;
-
-    server_tokens off;
-    add_header X-Content-Type-Options nosniff always;
-    add_header Referrer-Policy no-referrer always;
-
-    client_max_body_size 1m;
-    # Proxy de vídeo: sem buffer, sem cache, latência baixa.
-    fastcgi_buffering off;
-    proxy_buffering off;
-    tcp_nodelay on;
-    sendfile off;
-
-    # Painel NÃO existe nos domínios públicos.
-    location = /                { return 404; }
-    location = /index.php       { return 404; }
-    location = /login.php       { return 404; }
-    location = /dashboard.php   { return 404; }
-    location = /avancado.php    { return 404; }
-    location = /setup.php       { return 404; }
-    location = /health.php      { return 404; }
-    location ^~ /assets/        { return 404; }
-
-    # Todo o resto é stream/playlist e vai para o proxy.
-    location / {
-        include fastcgi_params;
-        fastcgi_pass unix:{$phpFpmSocket};
-        fastcgi_param SCRIPT_FILENAME \$document_root/proxy.php;
-        fastcgi_param SCRIPT_NAME /proxy.php;
-        fastcgi_read_timeout 3600;
-        fastcgi_send_timeout 3600;
-        fastcgi_buffering off;
-        fastcgi_param HTTP_X_PROXY_SECRET "{$secret}";
-{$httpsParam}    }
-}
-NGINX;
+        $out = "server {\n";
+        $out .= $listen . "\n";
+        $out .= "    server_name _;\n\n";
+        $out .= $ssl . "    root {$panelPath}/public;\n\n";
+        $out .= "    # Query strings XUI carregam username/password: nunca persistir em disco.\n";
+        $out .= "    access_log off;\n";
+        $out .= "    error_log  {$panelPath}/storage/logs/error.log warn;\n\n";
+        $out .= "    server_tokens off;\n";
+        $out .= "    add_header X-Content-Type-Options nosniff always;\n";
+        $out .= "    add_header Referrer-Policy no-referrer always;\n\n";
+        $out .= "    client_max_body_size 1m;\n";
+        $out .= "    # Proxy de vídeo: sem buffer, sem cache, latência baixa.\n";
+        $out .= "    fastcgi_buffering off;\n";
+        $out .= "    proxy_buffering off;\n";
+        $out .= "    tcp_nodelay on;\n";
+        $out .= "    sendfile off;\n\n";
+        $out .= "    # Painel NÃO existe nos domínios públicos.\n";
+        $out .= "    location = /                { include fastcgi_params; fastcgi_pass unix:{$phpFpmSocket}; fastcgi_param SCRIPT_FILENAME \$document_root/proxy.php; fastcgi_param SCRIPT_NAME /proxy.php; fastcgi_read_timeout 3600; fastcgi_send_timeout 3600; fastcgi_buffering off; }\n";
+        $out .= "    location = /index.php       { return 404; }\n";
+        $out .= "    location = /login.php       { return 404; }\n";
+        $out .= "    location = /dashboard.php   { return 404; }\n";
+        $out .= "    location = /avancado.php    { return 404; }\n";
+        $out .= "    location = /setup.php       { return 404; }\n";
+        $out .= "    location = /health.php      { return 404; }\n";
+        $out .= "    location ^~ /assets/        { return 404; }\n";
+        $out .= "    location = /lb-contract.php { include fastcgi_params; fastcgi_pass unix:{$phpFpmSocket}; fastcgi_param SCRIPT_FILENAME \$document_root/lb-contract.php; fastcgi_param SCRIPT_NAME /lb-contract.php; }\n";
+        $out .= "    location = /lb-events.php   { include fastcgi_params; fastcgi_pass unix:{$phpFpmSocket}; fastcgi_param SCRIPT_FILENAME \$document_root/lb-events.php; fastcgi_param SCRIPT_NAME /lb-events.php; }\n";
+        $out .= "    location = /lb-ingest.php   { include fastcgi_params; fastcgi_pass unix:{$phpFpmSocket}; fastcgi_param SCRIPT_FILENAME \$document_root/lb-ingest.php; fastcgi_param SCRIPT_NAME /lb-ingest.php; }\n\n";
+        $out .= "    # Todo o resto é stream/playlist e vai para o proxy.\n";
+        $out .= "    location / {\n";
+        $out .= "        proxy_http_version 1.1;\n";
+        $out .= "        proxy_set_header Host \$host;\n";
+        $out .= "        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n";
+        $out .= "        proxy_set_header X-Real-IP \$remote_addr;\n";
+        $out .= "        proxy_set_header X-Forwarded-Proto \$scheme;\n";
+        $out .= "        proxy_set_header X-Proxy-Secret \"{$secret}\";\n";
+        $out .= "        proxy_set_header Connection \"\";\n";
+        $out .= "        proxy_buffering off;\n";
+        $out .= "        proxy_request_buffering off;\n";
+        $out .= "        proxy_connect_timeout 10s;\n";
+        $out .= "        proxy_send_timeout 3600s;\n";
+        $out .= "        proxy_read_timeout 3600s;\n";
+        $out .= "        proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;\n";
+        if ($publicGoUpstream !== '') {
+            $out .= "        proxy_pass {$publicGoUpstream};\n";
+        } else {
+            $out .= "        include fastcgi_params;\n";
+            $out .= "        fastcgi_pass unix:{$phpFpmSocket};\n";
+            $out .= "        fastcgi_param SCRIPT_FILENAME \$document_root/proxy.php;\n";
+            $out .= "        fastcgi_param SCRIPT_NAME /proxy.php;\n";
+            $out .= "        fastcgi_read_timeout 3600;\n";
+            $out .= "        fastcgi_send_timeout 3600;\n";
+            $out .= "        fastcgi_buffering off;\n";
+            $out .= "        fastcgi_param HTTP_X_PROXY_SECRET \"{$secret}\";\n";
+        }
+        $out .= "{$httpsParam}    }\n";
+        $out .= "}\n";
+        return $out;
     }
 
     private static function panelRedirect(string $panelDomain): string

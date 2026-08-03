@@ -203,10 +203,68 @@ final class RestreamRuntime
         return null;
     }
 
+    /**
+     * Repara sessões direct source que ficaram sem lb_id mesmo com rota ativa
+     * para um músculo saudável. Isso limpa "main" residual no painel quando o
+     * request antigo foi aberto antes de um fallback ser desativado ou quando a
+     * trilha do LB chegou atrasada e a sessão ficou órfã.
+     *
+     * @return array{sessions:int,events:int}
+     */
+    private static function repairDirectLbLabels(int $eventsWindow = 1800): array
+    {
+        $now = time();
+        $sessionSql = 'UPDATE cdn_sessions s
+                          SET lb_id = route.lb_id
+                         FROM lb_user_routes route
+                         JOIN lb_nodes lb ON lb.id = route.lb_id
+                        WHERE route.username = s.username
+                          AND s.lb_id = 0
+                          AND s.direct_source = 1
+                          AND ' . CdnSession::activeWhereSql($now, 's') . '
+                          AND ' . CdnSession::publicClientWhereSql('s') . '
+                          AND route.lb_id > 0
+                          AND route.mode IN (\'forced\', \'auto\')
+                          AND lb.enabled = 1
+                          AND lb.drain_mode = 0
+                          AND lb.install_status = \'installed\'
+                          AND lb.health_status <> \'down\'';
+        $sessions = Database::run($sessionSql, [], 'restream.repair_direct_lb_sessions');
+
+        $eventsSql = 'UPDATE proxy_request_events e
+                         SET lb_id = route.lb_id
+                        FROM lb_user_routes route
+                        JOIN lb_nodes lb ON lb.id = route.lb_id
+                       WHERE route.username = e.username
+                         AND e.lb_id = 0
+                         AND e.session_key <> \'\'
+                         AND e.ts_epoch >= ' . ($now - max(60, $eventsWindow)) . '
+                         AND ' . self::protectedHostSql('e.public_host') . '
+                         AND EXISTS (
+                               SELECT 1
+                                 FROM cdn_sessions s
+                                WHERE s.session_key = e.session_key
+                                  AND s.lb_id = route.lb_id
+                           )
+                         AND route.lb_id > 0
+                         AND route.mode IN (\'forced\', \'auto\')
+                         AND lb.enabled = 1
+                         AND lb.drain_mode = 0
+                         AND lb.install_status = \'installed\'
+                         AND lb.health_status <> \'down\'';
+        $events = Database::run($eventsSql, [], 'restream.repair_direct_lb_events');
+
+        return [
+            'sessions' => (int) $sessions,
+            'events' => (int) $events,
+        ];
+    }
+
     public static function consolidate(array &$stats): void
     {
         $pdo = Database::pdo();
         $since = time() - 300;
+        $repaired = self::repairDirectLbLabels();
         $hasRuntimeUptime = Database::tableHasColumn('proxy_user_runtime', 'uptime_start_epoch');
         $hasRuntimeLbLabel = Database::tableHasColumn('proxy_user_runtime', 'last_lb_label');
         JobRunner::step('agregar_eventos_5m');
@@ -408,6 +466,8 @@ final class RestreamRuntime
         // Some quem sumiu da janela.
         $pdo->exec('DELETE FROM proxy_user_runtime WHERE last_activity_epoch < ' . ($since - 300));
         $stats['details']['users'] = $stats['processed'];
+        $stats['details']['direct_lb_sessions_repaired'] = (int) ($repaired['sessions'] ?? 0);
+        $stats['details']['direct_lb_events_repaired'] = (int) ($repaired['events'] ?? 0);
     }
 
     public static function detectInconsistencies(array &$stats): void
@@ -1029,6 +1089,7 @@ final class RestreamRuntime
     {
         $pdo = Database::pdo();
         $since = time() - 1800;
+        $repaired = self::repairDirectLbLabels(1800);
         $pdo->exec(
             "UPDATE proxy_request_events SET match_confidence = 'pending'
              WHERE ts_epoch >= " . $since . "
@@ -1043,6 +1104,8 @@ final class RestreamRuntime
                 AND match_confidence = \'pending\'
                 AND ' . self::protectedHostSql('public_host')
         )->fetchColumn();
+        $stats['details']['direct_lb_sessions_repaired'] = (int) ($repaired['sessions'] ?? 0);
+        $stats['details']['direct_lb_events_repaired'] = (int) ($repaired['events'] ?? 0);
         self::matchSessions($stats);
     }
 

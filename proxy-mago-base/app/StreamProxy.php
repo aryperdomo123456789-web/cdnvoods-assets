@@ -137,18 +137,6 @@ final class StreamProxy
         if (!empty($origin['host_header']) && empty($origin['__off_origin'])) {
             $headers[] = 'Host: ' . $origin['host_header'];
         }
-        if (!empty($origin['forwarded_via_brain']) && empty($origin['__off_origin'])) {
-            $headers[] = 'X-Cdn-Brain-Proxy: 1';
-            if (!empty($origin['forwarded_public_host'])) {
-                $headers[] = 'X-Cdn-Original-Host: ' . (string) $origin['forwarded_public_host'];
-                $headers[] = 'X-Forwarded-Host: ' . (string) $origin['forwarded_public_host'];
-            }
-            if (!empty($origin['forwarded_client_ip'])) {
-                $headers[] = 'X-Cdn-Original-IP: ' . (string) $origin['forwarded_client_ip'];
-                $headers[] = 'X-Real-IP: ' . (string) $origin['forwarded_client_ip'];
-                $headers[] = 'X-Forwarded-For: ' . (string) $origin['forwarded_client_ip'];
-            }
-        }
         foreach ($extra as $h) {
             $headers[] = $h;
         }
@@ -323,15 +311,9 @@ final class StreamProxy
      * @param array $ctx contexto de PlaylistRewriter::compile()
      * @return array{status:int,bytes:int}
      */
-    public static function streamTextual(
-        array $origin,
-        string $path,
-        array $query,
-        array $ctx,
-        string $forcedType = '',
-        array $extraResponseHeaders = []
-    ): array {
-        return self::pump($origin, $path, $query, '', $ctx, $forcedType, $extraResponseHeaders);
+    public static function streamTextual(array $origin, string $path, array $query, array $ctx, string $forcedType = ''): array
+    {
+        return self::pump($origin, $path, $query, '', $ctx, $forcedType, []);
     }
 
     private static function pump(
@@ -345,6 +327,16 @@ final class StreamProxy
     ): array
     {
         $url = self::buildOriginUrl($origin, $path, $query);
+        $relayUrl = trim((string) Config::get('xui_internal_relay_url', ''));
+        $relayToken = trim((string) Config::get('xui_internal_relay_token', ''));
+        $xuiOrigin = Config::get('xui_origin');
+        $xuiHost = is_array($xuiOrigin) ? strtolower(trim((string) ($xuiOrigin['host'] ?? ''))) : '';
+        $originHost = strtolower(trim((string) ($origin['host'] ?? '')));
+        $useRelay = $relayUrl !== '' && $relayToken !== '' && $xuiHost !== '' && $originHost !== '' && $originHost === $xuiHost;
+        if ($useRelay) {
+            $join = str_contains($relayUrl, '?') ? '&' : '?';
+            $url = $relayUrl . $join . 'target=' . rawurlencode($url);
+        }
         $bytesOut = 0;
         $headersSent = false;
         $status = 0;
@@ -355,12 +347,26 @@ final class StreamProxy
 
         redo:
 
+        if ($textual && !$headersSent) {
+            if ($forcedType !== '') {
+                header('Content-Type: ' . $forcedType);
+            }
+            header('Cache-Control: no-store');
+            header('X-Content-Type-Options: nosniff');
+            foreach ($extraResponseHeaders as $responseHeader) {
+                header($responseHeader);
+            }
+        }
+
         $ch = curl_init($url);
         $extra = [];
         if ($forwardedRange !== '') {
             $extra[] = 'Range: ' . $forwardedRange;
         }
         $headers = self::buildHeaders($origin, $extra);
+        if ($useRelay) {
+            $headers[] = 'X-Relay-Token: ' . $relayToken;
+        }
         curl_setopt_array($ch, [
             CURLOPT_HTTPHEADER => $headers,
             // Redirects são resolvidos manualmente com allowlist de host.
@@ -377,14 +383,6 @@ final class StreamProxy
                 if ($textual && !$headersSent) {
                     if ($status === 0) {
                         $status = 200;
-                    }
-                    if ($forcedType !== '') {
-                        header('Content-Type: ' . $forcedType);
-                    }
-                    header('Cache-Control: no-store');
-                    header('X-Content-Type-Options: nosniff');
-                    foreach ($extraResponseHeaders as $responseHeader) {
-                        header($responseHeader);
                     }
                     http_response_code($status);
                     $headersSent = true;

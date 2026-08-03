@@ -68,7 +68,15 @@ function proxy_direct_host_brain_fallback(?RequestContext $req): array
     }
     $configured = proxy_host_list((string) Config::get('brain_direct_fallback_hosts', ''));
     if ($configured === []) {
-        return ['enabled' => false, 'host' => '', 'mode' => ''];
+        // Sem allowlist explícita, qualquer host marcado como direct no catálogo
+        // pode usar o relay interno. Isso evita quebrar apps novos só porque o
+        // host não foi adicionado manualmente à configuração.
+        $db = DirectCatalog::dbHostFor($streamId);
+        $host = strtolower(trim((string) ($db['host'] ?? '')));
+        if ((int) ($db['direct'] ?? 0) !== 1 || $host === '') {
+            return ['enabled' => false, 'host' => '', 'mode' => (string) ($db['mode'] ?? '')];
+        }
+        return ['enabled' => true, 'host' => $host, 'mode' => (string) ($db['mode'] ?? '')];
     }
     $db = DirectCatalog::dbHostFor($streamId);
     $host = strtolower(trim((string) ($db['host'] ?? '')));
@@ -145,6 +153,159 @@ $token = (string) ($query['t'] ?? '');
 // sanitização antes de sair — caso contrário a origem vaza no corpo.
 $isTextual = (bool) preg_match('#(get\.php$|player_api\.php$|xmltv\.php$|panel_api\.php$|\.m3u8?$|\.m3u$|\.xml$|\.json$)#i', $path);
 
+function proxy_guard_landing(string $host): void
+{
+    header('Content-Type: text/html; charset=utf-8');
+    header('Cache-Control: no-store');
+    header('X-Content-Type-Options: nosniff');
+    header('Referrer-Policy: no-referrer');
+    http_response_code(200);
+    $safeHost = htmlspecialchars($host, ENT_QUOTES, 'UTF-8');
+    $wizardGif = 'https://c.tenor.com/MDxs9sUkJ_AAAAAC/tenor.gif';
+    echo <<<HTML
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CDN Voods</title>
+  <style>
+    :root{
+      --bg:#03040a; --bg2:#081126; --neon:#8cf6ff; --hot:#ff4fd8; --gold:#ffd166; --text:#eef6ff;
+      --line:rgba(140,246,255,.22);
+    }
+    html,body{height:100%;margin:0;background:
+      radial-gradient(circle at 50% 38%, rgba(255,79,216,.20), transparent 18%),
+      radial-gradient(circle at 52% 46%, rgba(140,246,255,.18), transparent 24%),
+      radial-gradient(circle at 20% 18%, rgba(255,79,216,.16), transparent 23%),
+      radial-gradient(circle at 84% 24%, rgba(140,246,255,.16), transparent 25%),
+      radial-gradient(circle at 50% 82%, rgba(255,209,102,.08), transparent 28%),
+      linear-gradient(160deg, #02030a, #060a18 38%, #0b1230 58%, #050812 78%, #020309 100%);
+      color:var(--text); font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; overflow:hidden;
+    }
+    .wrap{position:relative;display:grid;place-items:center;height:100%;perspective:1200px}
+    .halo{position:absolute;inset:-20%;background:
+      radial-gradient(circle at 50% 48%, rgba(140,246,255,.16), transparent 22%),
+      radial-gradient(circle at 50% 44%, rgba(255,79,216,.12), transparent 28%),
+      radial-gradient(circle at 50% 72%, rgba(255,209,102,.08), transparent 20%);
+      filter:blur(24px); animation: drift 12s ease-in-out infinite alternate;
+    }
+    @keyframes drift{from{transform:translate3d(-1%, -1%,0) scale(1)}to{transform:translate3d(1%,1%,0) scale(1.05)}}
+    .card{position:relative;width:min(82vw,1080px);min-height:min(72vh,760px);padding:clamp(16px,2.4vw,28px);border:1px solid rgba(140,246,255,.16);border-radius:30px;background:
+      radial-gradient(circle at 50% 42%, rgba(255,79,216,.18), transparent 18%),
+      radial-gradient(circle at 56% 48%, rgba(140,246,255,.16), transparent 20%),
+      radial-gradient(circle at 50% 70%, rgba(255,79,216,.10), transparent 22%),
+      linear-gradient(180deg, rgba(4,7,18,.74), rgba(2,4,12,.90) 56%, rgba(2,4,10,.96) 100%);
+      backdrop-filter:blur(14px);box-shadow:0 0 0 1px rgba(255,255,255,.03), 0 28px 100px rgba(0,0,0,.60);transform-style:preserve-3d;overflow:hidden}
+    .title{font-size:clamp(28px,5vw,54px);font-weight:900;letter-spacing:.04em;line-height:1.02;margin:0 0 10px;text-transform:uppercase;text-shadow:0 0 18px rgba(140,246,255,.42), 0 0 32px rgba(255,79,216,.22)}
+    .sub{margin:0 0 22px;color:rgba(238,246,255,.82);font-size:clamp(14px,2vw,18px)}
+    .sig{display:inline-flex;gap:10px;align-items:center;padding:8px 12px;border-radius:999px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);font-size:12px;color:rgba(238,246,255,.72);margin-bottom:18px}
+    .sig b{color:var(--gold)}
+    .scene{position:relative;display:grid;grid-template-columns:minmax(240px,.84fr) minmax(220px,.66fr);gap:clamp(12px,1.8vw,22px);align-items:center;justify-items:center;min-height:calc(72vh - 90px);z-index:2;max-width:980px;margin:0 auto;padding-top:clamp(4px,1.2vh,10px)}
+    .wizard{position:relative;width:min(100%,420px);height:min(40vh,380px);min-height:190px;display:grid;place-items:center;transform-style:preserve-3d;transform:rotateX(var(--rx,0deg)) rotateY(var(--ry,0deg)) translateY(calc(var(--ty,0px) - 18px))}
+    .wizard:before{content:"";position:absolute;inset:10% 6% 0;background:
+      radial-gradient(circle at 50% 44%, rgba(140,246,255,.26), transparent 28%),
+      radial-gradient(circle at 50% 52%, rgba(255,79,216,.18), transparent 34%);
+      filter:blur(34px);opacity:.9;animation:pulse 3.8s ease-in-out infinite alternate}
+    .wizard img{width:100%;height:100%;max-height:100%;object-fit:contain;object-position:center center;filter:drop-shadow(0 0 20px rgba(140,246,255,.16)) drop-shadow(0 0 40px rgba(255,79,216,.16));transform:translateZ(80px) scale(var(--scale,1));animation: floaty 6.6s ease-in-out infinite alternate}
+    .sigil{position:absolute;top:3%;right:6%;width:74px;height:74px;border-radius:50%;border:1px solid rgba(140,246,255,.28);box-shadow:0 0 0 8px rgba(140,246,255,.05), 0 0 28px rgba(140,246,255,.18);animation:spin 9s linear infinite,pulse 2.8s ease-in-out infinite alternate}
+    .sigil:before,.sigil:after{content:"";position:absolute;inset:18%;border-radius:50%;border:1px solid rgba(255,79,216,.38)}
+    .sigil:after{inset:34%}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .text{padding:8px 4px 0;align-self:center;justify-self:center;max-width:min(38vw,420px);z-index:3;transform:translateZ(40px);text-align:center}
+    .big{
+      font-size:clamp(24px,2.5vw,38px);
+      line-height:1.15;
+      font-weight:900;
+      letter-spacing:.01em;
+      color:#f6fbff;
+      max-width:18ch;
+      margin:8px auto 0;
+      text-shadow:
+        0 1px 0 rgba(255,255,255,.35),
+        0 2px 0 rgba(140,246,255,.20),
+        0 3px 0 rgba(140,246,255,.14),
+        0 8px 18px rgba(0,0,0,.40),
+        0 0 24px rgba(255,79,216,.12);
+      transform:perspective(700px) rotateX(12deg);
+    }
+    .big strong{color:var(--neon)}
+    .small{margin-top:14px;color:rgba(238,246,255,.62);font-size:13px}
+    .quote{margin:18px auto 0;padding:12px 16px;border-left:3px solid rgba(140,246,255,.55);background:rgba(255,255,255,.03);border-radius:12px;color:rgba(238,246,255,.84);font-size:13px;display:inline-block;box-shadow:0 0 0 1px rgba(140,246,255,.04), 0 0 24px rgba(255,79,216,.06)}
+    .scan{position:absolute;inset:auto 0 0; height:2px;background:linear-gradient(90deg, transparent, rgba(140,246,255,.75), rgba(255,79,216,.6), transparent);filter:blur(.2px);animation:scan 2.4s linear infinite}
+    @keyframes scan{0%{transform:translateY(0)}100%{transform:translateY(-100vh)}}
+    @keyframes pulse{from{opacity:.55;transform:scale(.98)}to{opacity:1;transform:scale(1.02)}}
+    @keyframes floaty{from{transform:translateZ(80px) translateY(-2px) scale(var(--scale,1))}to{transform:translateZ(80px) translateY(6px) scale(var(--scale,1))}}
+    .bgglow{position:absolute;inset:-10% -10% auto -10%;height:85%;background:
+      radial-gradient(circle at 50% 40%, rgba(255,79,216,.18), transparent 25%),
+      radial-gradient(circle at 50% 48%, rgba(140,246,255,.12), transparent 30%);
+      filter:blur(34px);opacity:.94;pointer-events:none;animation:pulse 4.4s ease-in-out infinite alternate}
+    .backdrop-art{position:absolute;inset:0;background:url('{$wizardGif}') center center / cover no-repeat;opacity:.08;filter:saturate(1.08) contrast(1.03) blur(6px);transform:scale(1.14);pointer-events:none}
+    @media (max-width:860px){
+      .card{width:92vw;min-height:84vh;padding:14px;border-radius:24px}
+      .scene{grid-template-columns:1fr;min-height:calc(84vh - 80px);gap:10px;padding-top:4px}
+      .text{order:2;max-width:100%;justify-self:center;text-align:center}
+      .wizard{order:1;width:min(100%,320px);height:min(28vh,250px);min-height:140px;transform:rotateX(var(--rx,0deg)) rotateY(var(--ry,0deg)) translateY(calc(var(--ty,0px) - 12px))}
+      .title{font-size:clamp(22px,7vw,36px)}
+      .sub{font-size:14px}
+      .big{max-width:100%}
+      .quote{max-width:100%}
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="halo"></div>
+  <div class="card" id="card" data-host="{$safeHost}">
+    <div class="backdrop-art"></div>
+    <div class="bgglow"></div>
+    <div class="sig"><b>CDN Voods</b><span>proteção ativa</span></div>
+    <h1 class="title">Você entrou no portal errado</h1>
+    <div class="scene">
+      <div class="wizard" id="wizard">
+        <div class="sigil"></div>
+        <img src="{$wizardGif}" alt="Mago guardião">
+      </div>
+      <div class="text">
+        <div class="big">viva hoje como se fosse seu ultimo dia BY: MagoPD</div>
+      </div>
+    </div>
+    <div class="scan"></div>
+  </div>
+</div>
+<script>
+const card = document.getElementById('card');
+const wiz = document.getElementById('wizard');
+let pointerX = 0;
+let pointerY = 0;
+function move(e){
+  const r = card.getBoundingClientRect();
+  pointerX = ((e.clientX - r.left) / r.width - 0.5) * 2;
+  pointerY = ((e.clientY - r.top) / r.height - 0.5) * 2;
+  card.style.setProperty('--scale', '1');
+  card.style.transform = 'rotateX(' + (-pointerY * 2).toFixed(2) + 'deg) rotateY(' + (pointerX * 3).toFixed(2) + 'deg)';
+  wiz.style.setProperty('--rx', (-pointerY * 8).toFixed(2) + 'deg');
+  wiz.style.setProperty('--ry', (pointerX * 10).toFixed(2) + 'deg');
+  wiz.style.setProperty('--ty', (-pointerY * 5).toFixed(2) + 'px');
+  wiz.style.setProperty('--scale', (1 + Math.abs(pointerX) * 0.02 + Math.abs(pointerY) * 0.02).toFixed(3));
+}
+window.addEventListener('mousemove', move, {passive:true});
+window.addEventListener('deviceorientation', (e) => {
+  if (e.beta == null || e.gamma == null) return;
+  const x = Math.max(-1, Math.min(1, e.gamma / 35));
+  const y = Math.max(-1, Math.min(1, e.beta / 35));
+  card.style.transform = 'rotateX(' + (-y * 1.5).toFixed(2) + 'deg) rotateY(' + (x * 2).toFixed(2) + 'deg)';
+  wiz.style.setProperty('--rx', (-y * 8).toFixed(2) + 'deg');
+  wiz.style.setProperty('--ry', (x * 10).toFixed(2) + 'deg');
+  wiz.style.setProperty('--ty', (-y * 5).toFixed(2) + 'px');
+}, {passive:true});
+</script>
+</body>
+</html>
+HTML;
+    exit;
+}
+
 try {
     $clientIp = AccessGuard::clientIp();
     $userAgent = (string) ($_SERVER['HTTP_USER_AGENT'] ?? '-');
@@ -155,6 +316,17 @@ try {
     error_log('[proxy] guard falhou: ' . $e->getMessage());
     proxy_fail(503, $host, $path, 'guard_error');
     return;
+}
+
+// Root navegador-first: o / precisa mostrar a tela neon antes de qualquer
+// regra de entrega por LB. Isso não toca get.php, player_api.php nem playback.
+if (
+    $path === '/'
+    && in_array(strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')), ['GET', 'HEAD'], true)
+    && $token === ''
+    && stripos((string) ($_SERVER['HTTP_ACCEPT'] ?? ''), 'text/html') !== false
+) {
+    proxy_guard_landing($host);
 }
 
 if (!$decision['ok']) {
@@ -413,9 +585,11 @@ try {
             $forced = ($output === 'hls' || $output === 'm3u8')
                 ? 'application/vnd.apple.mpegurl'
                 : 'audio/x-mpegurl';
-            // get.php é DOWNLOAD de lista, não reprodução: sem isso o navegador
-            // tenta abrir a playlist no player e o usuário vê tela de erro.
-            $extraHeaders[] = 'Content-Disposition: attachment; filename="playlist.m3u"';
+            // Apps de IPTV precisam ler a playlist imediatamente. Mantemos o
+            // tipo correto e evitamos forçar download no caminho quente.
+            if (!headers_sent()) {
+                header('Cache-Control: no-store');
+            }
         } elseif (preg_match('#\.m3u8?$#i', $path)) {
             $forced = 'application/vnd.apple.mpegurl';
         }

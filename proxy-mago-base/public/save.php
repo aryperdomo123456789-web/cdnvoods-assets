@@ -23,6 +23,9 @@ $logSegments = isset($_POST['log_segments']) ? 1 : 0;
 $tokenTtl = (int) ($_POST['token_ttl'] ?? Config::get('token_ttl'));
 $rateLimit = (int) ($_POST['rate_limit_per_minute'] ?? Config::get('rate_limit_per_minute'));
 $appSecret = trim((string) ($_POST['app_secret'] ?? ''));
+$forceHttps = isset($_POST['force_https']) ? 1 : 0;
+$admin2faEnabled = isset($_POST['admin_2fa_enabled']) ? 1 : 0;
+$admin2faSecret = trim((string) ($_POST['admin_2fa_secret'] ?? ''));
 
 if ($adminUser === '') {
     http_response_code(422);
@@ -37,6 +40,11 @@ if ($panelDomain !== '' && !filter_var($panelDomain, FILTER_VALIDATE_DOMAIN, FIL
 if ($appSecret !== '' && !preg_match('/^[A-Za-z0-9_-]{32,128}$/', $appSecret)) {
     http_response_code(422);
     exit('O segredo deve ter entre 32 e 128 caracteres (letras, números, _ ou -).');
+}
+
+if ($admin2faSecret !== '' && !preg_match('/^[A-Z2-7]{16,64}$/', strtoupper($admin2faSecret))) {
+    http_response_code(422);
+    exit('O segredo 2FA precisa estar em Base32.');
 }
 
 SettingsRepository::set('admin_user', $adminUser);
@@ -54,6 +62,11 @@ SettingsRepository::set('ua_filter_enabled', $allowedUserAgent === '' ? 0 : $uaF
 SettingsRepository::set('log_segments', $logSegments);
 SettingsRepository::set('token_ttl', max(60, $tokenTtl));
 SettingsRepository::set('rate_limit_per_minute', max(0, $rateLimit));
+SettingsRepository::set('force_https', $forceHttps);
+SettingsRepository::set('admin_2fa_enabled', $admin2faEnabled);
+if ($admin2faSecret !== '') {
+    SettingsRepository::set('admin_2fa_secret', strtoupper($admin2faSecret));
+}
 
 if ($appSecret === '') {
     $appSecret = bin2hex(random_bytes(32));

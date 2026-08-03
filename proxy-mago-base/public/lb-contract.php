@@ -13,6 +13,7 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . '/app/bootstrap.php';
 require_once dirname(__DIR__) . '/app/RedisClient.php';
 require_once dirname(__DIR__) . '/app/StateStore.php';
+require_once dirname(__DIR__) . '/app/Cache.php';
 require_once dirname(__DIR__) . '/app/LbContract.php';
 
 header('Content-Type: application/json; charset=utf-8');
@@ -38,11 +39,13 @@ if (!LbContract::versionCompatible($reported)) {
     exit;
 }
 
+$cacheKey = 'lb-contract-' . substr(hash('sha1', (string) ($node['id'] ?? '0') . '|' . (string) ($node['token'] ?? $token)), 0, 24);
+
 try {
-    echo json_encode(
-        ['ok' => true] + LbContract::snapshot($node),
-        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
-    );
+    $snapshot = Cache::remember($cacheKey, 5, static function () use ($node): array {
+        return ['ok' => true] + LbContract::snapshot($node);
+    });
+    echo json_encode($snapshot, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 } catch (Throwable $e) {
     error_log('[lb-contract] ' . $e->getMessage());
     http_response_code(500);

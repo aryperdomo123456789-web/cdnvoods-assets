@@ -198,9 +198,11 @@ final class AccessGuard
     public static function clientIp(): string
     {
         $remote = (string) ($_SERVER['REMOTE_ADDR'] ?? '-');
-        if (self::isCloudflare($remote)) {
+        if (self::shouldTrustForwardedHeaders($remote)) {
             $cf = (string) ($_SERVER['HTTP_CF_CONNECTING_IP'] ?? '');
             if ($cf !== '' && filter_var($cf, FILTER_VALIDATE_IP)) return $cf;
+            $realIp = (string) ($_SERVER['HTTP_X_REAL_IP'] ?? '');
+            if ($realIp !== '' && filter_var($realIp, FILTER_VALIDATE_IP)) return $realIp;
             $xff = (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '');
             if ($xff !== '') {
                 $first = trim(explode(',', $xff)[0]);
@@ -218,6 +220,37 @@ final class AccessGuard
             if (self::cidrMatch($ip, $cidr)) return true;
         }
         return false;
+    }
+
+    private static function shouldTrustForwardedHeaders(string $remote): bool
+    {
+        if (self::isCloudflare($remote)) {
+            return true;
+        }
+
+        foreach (self::trustedProxyIps() as $trusted) {
+            if ($trusted === $remote) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function trustedProxyIps(): array
+    {
+        $raw = Config::get('trusted_proxy_ips', []);
+        if (is_string($raw)) {
+            $raw = preg_split('/[\s,]+/', $raw, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        }
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(
+            static fn ($value) => is_string($value) ? trim($value) : '',
+            $raw
+        )));
     }
 
     private static function cidrMatch(string $ip, string $cidr): bool

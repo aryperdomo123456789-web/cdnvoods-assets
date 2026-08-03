@@ -24,7 +24,15 @@ server {
     tcp_nodelay on;
     sendfile off;
 
-    location = /              { return 404; }
+    location = /              {
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php/php8.1-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root/proxy.php;
+        fastcgi_param SCRIPT_NAME /proxy.php;
+        fastcgi_read_timeout 3600;
+        fastcgi_send_timeout 3600;
+        fastcgi_buffering off;
+    }
     location = /index.php     { return 404; }
     location = /login.php     { return 404; }
     location = /dashboard.php { return 404; }

@@ -432,6 +432,20 @@ final class Database
             )'
         );
 
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS admin_login_attempts (
+                username TEXT NOT NULL,
+                client_ip TEXT NOT NULL,
+                window_start INTEGER NOT NULL,
+                failures INTEGER NOT NULL DEFAULT 0,
+                locked_until INTEGER NOT NULL DEFAULT 0,
+                last_failure_at TEXT NOT NULL DEFAULT "",
+                last_user_agent TEXT NOT NULL DEFAULT "",
+                PRIMARY KEY (username, client_ip, window_start)
+            )'
+        );
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_admin_login_attempts_lock ON admin_login_attempts(locked_until)');
+
         // Fase 1: origens protegidas (XUI etc.). Credenciais ficam APENAS aqui.
         $pdo->exec(
             'CREATE TABLE IF NOT EXISTS origins (

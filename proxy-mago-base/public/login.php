@@ -20,14 +20,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $username = trim((string) ($_POST['username'] ?? ''));
     $password = (string) ($_POST['password'] ?? '');
 
-    if (Auth::login($username, $password)) {
+    $result = Auth::attemptLogin($username, $password);
+    if (($result['ok'] ?? false) === true) {
         Audit::log('login', 'Admin login successful', $_SERVER['REMOTE_ADDR'] ?? '-', $_SERVER['HTTP_USER_AGENT'] ?? '-');
         header('Location: /dashboard.php');
         exit;
     }
 
-    Audit::log('login_fail', 'Admin login failed', $_SERVER['REMOTE_ADDR'] ?? '-', $_SERVER['HTTP_USER_AGENT'] ?? '-');
-    $error = 'Usuário ou senha inválidos.';
+    $reason = (string) ($result['reason'] ?? 'invalid');
+    $error = match ($reason) {
+        'locked' => 'Conta temporariamente bloqueada. Tente novamente mais tarde.',
+        default => 'Usuário, senha ou código inválidos.',
+    };
 }
 ?>
 <!doctype html>

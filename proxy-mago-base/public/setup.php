@@ -20,12 +20,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $originType = ($_POST['origin_type'] ?? 'a') === 'cname' ? 'cname' : 'a';
     $originHostHeader = trim((string) ($_POST['origin_host_header'] ?? ''));
     $appSecret = trim((string) ($_POST['app_secret'] ?? ''));
+    $admin2faEnabled = isset($_POST['admin_2fa_enabled']) ? 1 : 0;
+    $admin2faSecret = trim((string) ($_POST['admin_2fa_secret'] ?? ''));
 
     if ($adminUser === '' || $adminPass === '' || $originHost === '' || $originPort < 1 || $panelDomain === '') {
         $error = 'Preencha os campos obrigatórios.';
     } else {
         if ($appSecret === '') {
             $appSecret = bin2hex(random_bytes(32));
+        }
+        if ($admin2faEnabled && $admin2faSecret === '') {
+            $admin2faSecret = TotpAuth::randomSecret();
         }
 
         SettingsRepository::set('admin_user', $adminUser);
@@ -38,6 +43,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         SettingsRepository::set('ua_filter_enabled', 0);
         SettingsRepository::set('log_segments', 0);
         SettingsRepository::set('token_ttl', (int) Config::get('token_ttl', 3600));
+        SettingsRepository::set('force_https', (int) Config::get('force_https', 1));
+        SettingsRepository::set('admin_2fa_enabled', $admin2faEnabled);
+        if ($admin2faSecret !== '') {
+            SettingsRepository::set('admin_2fa_secret', strtoupper($admin2faSecret));
+        }
         SettingsRepository::set('created_at', date('c'));
 
         // Semeia a origem inicial e o alias primário (o domínio público do painel).
@@ -87,6 +97,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <input name="admin_user" required>
         <label>Senha admin</label>
         <input name="admin_pass" type="password" required>
+        <label><input type="checkbox" name="admin_2fa_enabled" value="1"> Ativar 2FA no admin</label>
+        <label>Segredo 2FA Base32 (opcional)</label>
+        <input name="admin_2fa_secret" placeholder="Deixe em branco para gerar automaticamente">
         <label>Domínio oficial do main</label>
         <input name="panel_domain" placeholder="cdnvoods.vr766.com" required>
         <small>Endereço público principal. Mantenha atrás da Cloudflare com proxy laranja para esconder o IP da VPS.</small>

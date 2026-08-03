@@ -252,7 +252,7 @@ function renderLive(d) {
 }
 
 async function tickLive() {
-  const p = new URLSearchParams({view: 'live_connections', limit: '300'});
+  const p = new URLSearchParams({view: 'live_connections', limit: '150'});
   const q = $('q').value.trim();
   if (q) { p.set(/^[0-9a-fA-F:.]+$/.test(q) && /[.:]/.test(q) ? 'ip' : 'username', q); }
   if (view.content !== 'all') p.set('content', view.content);
@@ -293,6 +293,21 @@ async function tickDirectHealth() {
   </tr>`).join('') : '<tr><td colspan="8" class="empty">nenhum hop de direct source na janela</td></tr>';
 }
 
+function detailOpenByBodyId(id) {
+  const body = $(id);
+  if (!body) return false;
+  const box = body.closest('details');
+  return !!(box && box.open);
+}
+
+Array.from(document.querySelectorAll('details.extra')).forEach((box) => {
+  box.addEventListener('toggle', () => {
+    if (!box.open) return;
+    if (box.querySelector('#userbody')) { tickUsers().catch((e) => console.warn('users panel degraded', e)); }
+    if (box.querySelector('#dhbody')) { tickDirectHealth().catch((e) => console.warn('direct health degraded', e)); }
+  });
+});
+
 function bootLoop(fn, ms, onFail) {
   let backoff = 1;
   const loop = async () => {
@@ -305,9 +320,15 @@ function bootLoop(fn, ms, onFail) {
   loop();
 }
 
-bootLoop(tickLive, 3000, (e) => failRow('body', 10, 'falha ao carregar conexões: ' + e.message));
-bootLoop(tickUsers, 10000, (e) => failRow('userbody', 8, 'falha ao carregar usuários: ' + e.message));
-bootLoop(tickDirectHealth, 30000, (e) => failRow('dhbody', 8, 'falha ao carregar host final: ' + e.message));
+bootLoop(tickLive, 3000, (e) => console.warn('live panel degraded', e));
+bootLoop(async () => {
+  if (!detailOpenByBodyId('userbody')) return;
+  await tickUsers();
+}, 30000, (e) => console.warn('users panel degraded', e));
+bootLoop(async () => {
+  if (!detailOpenByBodyId('dhbody')) return;
+  await tickDirectHealth();
+}, 45000, (e) => console.warn('direct health degraded', e));
 </script>
 </body>
 </html>

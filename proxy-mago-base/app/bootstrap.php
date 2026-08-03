@@ -15,6 +15,7 @@ require_once dirname(__DIR__) . '/app/Database.php';
 require_once dirname(__DIR__) . '/app/SettingsRepository.php';
 require_once dirname(__DIR__) . '/app/Audit.php';
 require_once dirname(__DIR__) . '/app/Auth.php';
+require_once dirname(__DIR__) . '/app/TotpAuth.php';
 require_once dirname(__DIR__) . '/app/NginxGenerator.php';
 require_once dirname(__DIR__) . '/app/OriginRepository.php';
 require_once dirname(__DIR__) . '/app/AliasRepository.php';

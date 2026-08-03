@@ -335,85 +335,95 @@ final class UserIntelligence
      */
     public static function liveConnections(array $filters = [], int $limit = 200): array
     {
-        $rows = CdnSession::live([
+        $norm = [
             'username' => (string) ($filters['username'] ?? ''),
             'ip' => (string) ($filters['ip'] ?? ''),
-        ], max(20, min(500, $limit)));
-        $rows = StreamCatalog::enrichSessions($rows);
-
-        $now = time();
-        $totals = [
-            'connections' => 0,
-            'live' => 0,
-            'movie' => 0,
-            'series' => 0,
-            'other' => 0,
-            'fetch' => 0,
-            'streaming' => 0,
-            'paused' => 0,
-            'direct' => 0,
-            'users' => 0,
-            'ips' => 0,
+            'kind' => strtolower(trim((string) ($filters['kind'] ?? ''))),
+            'only_streaming' => !empty($filters['only_streaming']),
+            'direct' => !empty($filters['direct']),
+            'include_fetch' => !empty($filters['include_fetch']),
         ];
-        $users = [];
-        $ips = [];
-        $out = [];
+        $limit = max(20, min(500, $limit));
+        $key = 'live_connections_' . md5(json_encode([$norm, $limit], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
-        foreach ($rows as $r) {
-            $kindRoute = (string) ($r['session_kind'] ?? '');
-            $isVideo = !in_array($kindRoute, ['playlist', 'api'], true);
-            $start = (int) ($r['uptime_start_epoch'] ?? 0);
-            if ($start <= 0) { $start = (int) ($r['direct_first_epoch'] ?? 0); }
-            if ($start <= 0) { $start = (int) ($r['started_epoch'] ?? 0); }
-            $uptime = $start > 0 ? max(0, $now - $start) : 0;
-            $idle = max(0, $now - (int) ($r['last_seen_epoch'] ?? 0));
-            $streaming = $idle <= 25;
+        return Cache::remember($key, 2, static function () use ($norm, $limit): array {
+            $rows = CdnSession::live([
+                'username' => $norm['username'],
+                'ip' => $norm['ip'],
+            ], $limit);
+            $rows = StreamCatalog::enrichSessions($rows);
 
-            $r['is_video'] = $isVideo ? 1 : 0;
-            $r['uptime_seconds'] = $uptime;
-            $r['uptime_human'] = self::humanUptime($uptime);
-            $r['idle_seconds'] = $idle;
-            $r['streaming'] = $streaming ? 1 : 0;
-            $r['live_state'] = $streaming ? 'transmitindo' : ($idle <= 150 ? 'pausado' : 'encerrando');
-            $r['exit_label'] = (string) ($r['lb_label'] ?? 'main');
-            $r['delivery_effective'] = ((int) ($r['effective_direct_source'] ?? $r['direct_source'] ?? 0) === 1)
-                ? 'direct_source'
-                : (string) ($r['delivery_mode'] ?? 'restream');
+            $now = time();
+            $totals = [
+                'connections' => 0,
+                'live' => 0,
+                'movie' => 0,
+                'series' => 0,
+                'other' => 0,
+                'fetch' => 0,
+                'streaming' => 0,
+                'paused' => 0,
+                'direct' => 0,
+                'users' => 0,
+                'ips' => 0,
+            ];
+            $users = [];
+            $ips = [];
+            $out = [];
 
-            $ck = $isVideo ? (string) ($r['content_kind'] ?? 'other') : 'fetch';
-            if ($ck === 'fetch') {
-                $totals['fetch']++;
-            } else {
-                $totals['connections']++;
-                $totals[$ck] = ($totals[$ck] ?? 0) + 1;
-                if ($streaming) { $totals['streaming']++; } else { $totals['paused']++; }
-                if ($r['delivery_effective'] === 'direct_source') { $totals['direct']++; }
+            foreach ($rows as $r) {
+                $kindRoute = (string) ($r['session_kind'] ?? '');
+                $isVideo = !in_array($kindRoute, ['playlist', 'api'], true);
+                $start = (int) ($r['uptime_start_epoch'] ?? 0);
+                if ($start <= 0) { $start = (int) ($r['direct_first_epoch'] ?? 0); }
+                if ($start <= 0) { $start = (int) ($r['started_epoch'] ?? 0); }
+                $uptime = $start > 0 ? max(0, $now - $start) : 0;
+                $idle = max(0, $now - (int) ($r['last_seen_epoch'] ?? 0));
+                $streaming = $idle <= 25;
+
+                $r['is_video'] = $isVideo ? 1 : 0;
+                $r['uptime_seconds'] = $uptime;
+                $r['uptime_human'] = self::humanUptime($uptime);
+                $r['idle_seconds'] = $idle;
+                $r['streaming'] = $streaming ? 1 : 0;
+                $r['live_state'] = $streaming ? 'transmitindo' : ($idle <= 150 ? 'pausado' : 'encerrando');
+                $r['exit_label'] = (string) ($r['lb_label'] ?? 'main');
+                $r['delivery_effective'] = ((int) ($r['effective_direct_source'] ?? $r['direct_source'] ?? 0) === 1)
+                    ? 'direct_source'
+                    : (string) ($r['delivery_mode'] ?? 'restream');
+
+                $ck = $isVideo ? (string) ($r['content_kind'] ?? 'other') : 'fetch';
+                if ($ck === 'fetch') {
+                    $totals['fetch']++;
+                } else {
+                    $totals['connections']++;
+                    $totals[$ck] = ($totals[$ck] ?? 0) + 1;
+                    if ($streaming) { $totals['streaming']++; } else { $totals['paused']++; }
+                    if ($r['delivery_effective'] === 'direct_source') { $totals['direct']++; }
+                }
+                $u = (string) ($r['username'] ?? '');
+                if ($u !== '') { $users[$u] = true; }
+                $ip = (string) ($r['client_ip'] ?? '');
+                if ($ip !== '') { $ips[$ip] = true; }
+
+                if ($norm['kind'] !== '' && $norm['kind'] !== 'all') {
+                    if ($norm['kind'] === 'fetch' && $isVideo) { continue; }
+                    if ($norm['kind'] !== 'fetch' && (!$isVideo || $ck !== $norm['kind'])) { continue; }
+                }
+                if ($norm['only_streaming'] && !$streaming) { continue; }
+                if ($norm['direct'] && $r['delivery_effective'] !== 'direct_source') { continue; }
+                if (!$norm['include_fetch'] && !$isVideo && ($norm['kind'] === '' || $norm['kind'] === 'all')) { continue; }
+                $out[] = $r;
             }
-            $u = (string) ($r['username'] ?? '');
-            if ($u !== '') { $users[$u] = true; }
-            $ip = (string) ($r['client_ip'] ?? '');
-            if ($ip !== '') { $ips[$ip] = true; }
 
-            // Filtros de tela (aplicados depois dos totais, para os cards
-            // continuarem mostrando o parque inteiro).
-            $want = strtolower(trim((string) ($filters['kind'] ?? '')));
-            if ($want !== '' && $want !== 'all') {
-                if ($want === 'fetch' && $isVideo) { continue; }
-                if ($want !== 'fetch' && (!$isVideo || $ck !== $want)) { continue; }
-            }
-            if (!empty($filters['only_streaming']) && !$streaming) { continue; }
-            if (!empty($filters['direct']) && $r['delivery_effective'] !== 'direct_source') { continue; }
-            if (empty($filters['include_fetch']) && !$isVideo && ($want === '' || $want === 'all')) { continue; }
-            $out[] = $r;
-        }
+            $totals['users'] = count($users);
+            $totals['ips'] = count($ips);
 
-        $totals['users'] = count($users);
-        $totals['ips'] = count($ips);
+            usort($out, static fn(array $a, array $b): int =>
+                [$b['streaming'], $b['uptime_seconds']] <=> [$a['streaming'], $a['uptime_seconds']]);
 
-        usort($out, static fn(array $a, array $b): int =>
-            [$b['streaming'], $b['uptime_seconds']] <=> [$a['streaming'], $a['uptime_seconds']]);
-
-        return ['rows' => $out, 'totals' => $totals];
+            return ['rows' => $out, 'totals' => $totals];
+        });
     }
 
     /** Detalhe de um usuário: plano + conexões abertas agora, uma a uma. */

@@ -8,6 +8,7 @@ package events
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -34,7 +35,19 @@ func NewQueue(brainBaseURL, token string) *Queue {
 	return &Queue{
 		url:   brainBaseURL + "/lb-events.php",
 		token: token,
-		http:  &http.Client{Timeout: 10 * time.Second},
+		http: &http.Client{
+			Timeout: 20 * time.Second,
+			Transport: &http.Transport{
+				Proxy:                 http.ProxyFromEnvironment,
+				DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+				MaxIdleConns:          256,
+				MaxIdleConnsPerHost:   64,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				ForceAttemptHTTP2:     false,
+			},
+		},
 		cap:   20000,
 	}
 }
@@ -148,7 +161,11 @@ func (q *Queue) Loop(every time.Duration, logf func(string, ...any)) {
 	for range t.C {
 		for i := 0; i < 4; i++ {
 			if err := q.Flush(); err != nil {
-				logf("[events] flush falhou: %v", err)
+				// Telemetria é best-effort. Falha aqui nunca deve poluir o log
+				// nem interferir no caminho quente do player.
+				if logf != nil {
+					_ = err
+				}
 				break
 			}
 		}

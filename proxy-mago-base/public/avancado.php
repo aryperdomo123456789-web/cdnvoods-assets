@@ -44,6 +44,7 @@ unset($_SESSION['nginx_apply_result']);
         <a href="#tokens">Tokens</a>
         <a href="#health">Saúde</a>
         <a href="#escala">Escala</a>
+        <a href="/usuario.php">Usuário</a>
         <a href="/lb.php">LB</a>
         <a href="/export-config.php">Exportar Nginx</a>
         <a href="/logout.php">Sair</a>
@@ -62,6 +63,12 @@ unset($_SESSION['nginx_apply_result']);
             <label>Nova senha admin</label>
             <input name="admin_pass" type="password" placeholder="Deixe em branco para manter">
             <small>Se você preencher uma nova senha e salvar, o login do painel passa a usar a nova credencial imediatamente.</small>
+            <label><input type="checkbox" name="force_https" value="1" <?php echo ((int) ($settings['force_https'] ?? Config::get('force_https', 1)) === 1) ? 'checked' : ''; ?>> Forçar HTTPS no painel quando houver certificado</label>
+            <small>Isso preserva o painel no TLS sem tocar no tráfego público dos players.</small>
+            <label><input type="checkbox" name="admin_2fa_enabled" value="1" <?php echo ((int) ($settings['admin_2fa_enabled'] ?? 0) === 1) ? 'checked' : ''; ?>> Ativar 2FA no admin (Google Authenticator)</label>
+            <label>Segredo 2FA Base32</label>
+            <input name="admin_2fa_secret" value="<?php echo htmlspecialchars((string) ($settings['admin_2fa_secret'] ?? '')); ?>" placeholder="Gerar ou preencher manualmente">
+            <small>Google Authenticator, 1Password, Aegis e similares aceitam esse formato.</small>
             <label>Domínio oficial do main</label>
             <input name="panel_domain" value="<?php echo htmlspecialchars((string) ($settings['panel_domain'] ?? '')); ?>" placeholder="cdnvoods.vr766.com">
             <label>User-Agent permitido (opcional, desligado por padrão)</label>

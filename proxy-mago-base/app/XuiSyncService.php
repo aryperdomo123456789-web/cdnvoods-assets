@@ -216,7 +216,7 @@ final class XuiSyncService
         $n = 0;
         try {
             foreach (XuiReadOnly::each(
-                'SELECT id, title, category_id, cover, cover_big, genre, plot, cast, rating,
+                'SELECT id, title, category_id, cover, cover_big, genre, plot, `cast`, rating,
                         director, release_date, last_modified, tmdb_id, episode_run_time,
                         backdrop_path, youtube_trailer
                    FROM streams_series'

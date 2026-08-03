@@ -134,7 +134,26 @@ final class CdnSession
             return '(1 = 1)';
         }
 
-        return '(' . $table . '.client_ip NOT IN (\'127.0.0.1\', \'::1\', \'\', \'-\'))';
+        $ips = array_merge(
+            ['127.0.0.1', '::1', '', '-'],
+            self::trustedProxyIps(),
+            self::lbPublicIps()
+        );
+        $ips = array_values(array_unique(array_filter($ips, static fn(string $ip): bool => $ip !== '')));
+
+        $ipSql = implode(', ', array_map(
+            static fn(string $ip): string => "'" . str_replace("'", "''", $ip) . "'",
+            $ips
+        ));
+        $hosts = self::lbPublicIps();
+        $hostSql = $hosts === []
+            ? '1 = 1'
+            : $table . '.public_host NOT IN (' . implode(', ', array_map(
+                static fn(string $host): string => "'" . str_replace("'", "''", strtolower($host)) . "'",
+                $hosts
+            )) . ')';
+
+        return '(' . $table . '.client_ip NOT IN (' . $ipSql . ') AND ' . $hostSql . ')';
     }
 
     /**
@@ -152,6 +171,44 @@ final class CdnSession
         }
 
         return (bool) $flag;
+    }
+
+    /** @return string[] */
+    private static function trustedProxyIps(): array
+    {
+        $raw = Config::get('trusted_proxy_ips', []);
+        if (is_string($raw)) {
+            $raw = preg_split('/[\s,]+/', $raw, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        }
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(
+            static fn($value): string => is_string($value) ? trim($value) : '',
+            $raw
+        )));
+    }
+
+    /** @return string[] */
+    private static function lbPublicIps(): array
+    {
+        static $ips = null;
+        if ($ips !== null) {
+            return $ips;
+        }
+
+        try {
+            $rows = Database::pdo()->query('SELECT public_ip FROM lb_nodes WHERE public_ip <> \'\'')->fetchAll(PDO::FETCH_COLUMN);
+            $ips = array_values(array_unique(array_filter(array_map(
+                static fn($value): string => is_string($value) ? trim($value) : '',
+                is_array($rows) ? $rows : []
+            ))));
+        } catch (Throwable $e) {
+            $ips = [];
+        }
+
+        return $ips;
     }
 
     public static function directEffectiveSql(string $table = 'cdn_sessions'): string
@@ -236,6 +293,7 @@ final class CdnSession
                    last_seen_at=excluded.last_seen_at,
                    last_seen_epoch=excluded.last_seen_epoch,
                    last_route_kind=excluded.last_route_kind,
+                   client_ip=excluded.client_ip,
                    public_host=excluded.public_host,
                    idle_timeout=excluded.idle_timeout,
                    active_requests=cdn_sessions.active_requests + 1,
@@ -635,10 +693,36 @@ final class CdnSession
         return Cache::remember($key, 1, static function () use ($filters, $limit): array {
             $sql = 'SELECT s.*,
                            ' . self::directEffectiveSql('s') . ' AS effective_direct_source,
-                           COALESCE(n.label, CASE WHEN s.lb_id > 0 THEN n.public_ip ELSE \'main\' END, \'main\') AS lb_label,
-                           COALESCE(n.public_ip, \'\') AS lb_ip
+                           CASE
+                               WHEN s.lb_id > 0
+                                   THEN COALESCE(n.label, n.public_ip, \'main\')
+                               WHEN ' . self::directEffectiveSql('s') . ' = 1
+                                    AND COALESCE(route.lb_id, 0) > 0
+                                    AND COALESCE(route.mode, \'\') IN (\'forced\', \'auto\')
+                                    AND COALESCE(route_node.enabled, 0) = 1
+                                    AND COALESCE(route_node.drain_mode, 0) = 0
+                                    AND COALESCE(route_node.install_status, \'\') = \'installed\'
+                                    AND COALESCE(route_node.health_status, \'\') <> \'down\'
+                                   THEN COALESCE(route_node.label, route_node.public_ip, \'main\')
+                               ELSE \'main\'
+                           END AS lb_label,
+                           CASE
+                               WHEN s.lb_id > 0
+                                   THEN COALESCE(n.public_ip, \'\')
+                               WHEN ' . self::directEffectiveSql('s') . ' = 1
+                                    AND COALESCE(route.lb_id, 0) > 0
+                                    AND COALESCE(route.mode, \'\') IN (\'forced\', \'auto\')
+                                    AND COALESCE(route_node.enabled, 0) = 1
+                                    AND COALESCE(route_node.drain_mode, 0) = 0
+                                    AND COALESCE(route_node.install_status, \'\') = \'installed\'
+                                    AND COALESCE(route_node.health_status, \'\') <> \'down\'
+                                   THEN COALESCE(route_node.public_ip, \'\')
+                               ELSE \'\'
+                           END AS lb_ip
                       FROM cdn_sessions s
                  LEFT JOIN lb_nodes n ON n.id = s.lb_id
+                 LEFT JOIN lb_user_routes route ON route.username = s.username
+                 LEFT JOIN lb_nodes route_node ON route_node.id = route.lb_id
                      WHERE ' . self::activeWhereSql(time(), 's');
             $params = [];
             if (empty($filters['include_internal'])) { $sql .= ' AND ' . self::publicClientWhereSql('s'); }

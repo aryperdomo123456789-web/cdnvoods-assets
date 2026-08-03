@@ -38,7 +38,7 @@ final class RequestContext
         $c->method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
         $c->path = $path;
         $c->userAgent = substr((string) ($_SERVER['HTTP_USER_AGENT'] ?? '-'), 0, 300);
-        $c->referer = substr((string) ($_SERVER['HTTP_REFERER'] ?? ''), 0, 300);
+        $c->referer = self::sanitizeReferer((string) ($_SERVER['HTTP_REFERER'] ?? ''));
         $c->routeKind = self::classify($path, $query);
 
         [$user, $pass] = self::extractCredentials($path, $query);
@@ -121,6 +121,24 @@ final class RequestContext
             }
         }
         return substr(http_build_query($safe), 0, 500);
+    }
+
+    private static function sanitizeReferer(string $referer): string
+    {
+        $referer = trim($referer);
+        if ($referer === '') {
+            return '';
+        }
+        $parts = parse_url($referer);
+        if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+            return substr(preg_replace('/[?&](username|password|token|t)=[^&]*/i', '$1=***', $referer) ?? $referer, 0, 300);
+        }
+        $safe = $parts['scheme'] . '://' . $parts['host'];
+        if (!empty($parts['port'])) {
+            $safe .= ':' . $parts['port'];
+        }
+        $safe .= $parts['path'] ?? '';
+        return substr($safe, 0, 300);
     }
 
     public function elapsedMs(): int
